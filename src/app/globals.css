@@ -1,0 +1,37 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=DM+Sans:wght@300;400;500;600&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; }
+body { background: #0A0E14; color: #C8D8E8; font-family: 'DM Sans', sans-serif; min-height: 100vh; }
+
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(30,144,255,0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30,144,255,0.04) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.scanline { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.scanline::after {
+  content: '';
+  position: absolute; left: 0; right: 0; height: 2px;
+  background: linear-gradient(transparent, rgba(30,144,255,0.12), transparent);
+  animation: scan 3.5s linear infinite;
+}
+@keyframes scan { 0% { top: -2px; } 100% { top: 100%; } }
+
+.flag-row { animation: fadeUp 0.4s ease forwards; opacity: 0; }
+.flag-row:nth-child(1) { animation-delay: 0.05s; }
+.flag-row:nth-child(2) { animation-delay: 0.15s; }
+.flag-row:nth-child(3) { animation-delay: 0.25s; }
+.flag-row:nth-child(4) { animation-delay: 0.35s; }
+.flag-row:nth-child(5) { animation-delay: 0.45s; }
+.flag-row:nth-child(6) { animation-delay: 0.55s; }
+.flag-row:nth-child(7) { animation-delay: 0.65s; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
