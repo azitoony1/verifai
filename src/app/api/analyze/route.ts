@@ -351,9 +351,13 @@ async function runReverseImageSearch(imageBase64: string): Promise<string> {
       matches.push(web.partialMatchingImages.length + " partial/similar match(es)")
     if (web.bestGuessLabels?.length)
       matches.push("Best guess: " + web.bestGuessLabels.map((l: { label: string }) => l.label).join(", "))
-    if (web.pagesWithMatchingImages?.length)
+    if (web.pagesWithMatchingImages?.length) {
       matches.push("Found in: " + web.pagesWithMatchingImages.slice(0, 5)
         .map((p: { url: string; pageTitle?: string }) => "[" + (p.pageTitle || "article") + "](" + p.url + ")").join(" · "))
+    } else if (web.fullMatchingImages?.length) {
+      matches.push("Image URLs: " + web.fullMatchingImages.slice(0, 3)
+        .map((i: { url: string }, idx: number) => "[source " + (idx + 1) + "](" + i.url + ")").join(" "))
+    }
     return matches.length ? matches.join(". ") : "No prior web appearances — not indexed on the open web"
   } catch { return "Reverse image search timed out or failed" }
 }
