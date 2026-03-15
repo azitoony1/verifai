@@ -25,6 +25,17 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, ms = 600
   }
 }
 
+async function gdeltFetch(url: string, retries = 3): Promise<Response> {
+  for (let i = 0; i < retries; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, 800 * i))
+    try {
+      const res = await fetchWithTimeout(url, {}, 8000)
+      if (res.status !== 429) return res
+    } catch { /* timeout — fall through to retry */ }
+  }
+  return new Response(null, { status: 429 })
+}
+
 // ── Domain classification lists ─────────────────────────────────────────────
 const TRUSTED_DOMAINS = [
   "bbc.co", "bbc.com", "reuters.com", "apnews.com", "nytimes.com",
@@ -173,7 +184,7 @@ async function runNewsBriefing(query: string): Promise<{ summary: string; skippe
     const q = encodeURIComponent(query.slice(0, 200))
     const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
       "&mode=artlist&maxrecords=8&timespan=1month&sort=DateDesc&format=json"
-    const res = await fetchWithTimeout(url, {}, 6000)
+    const res = await gdeltFetch(url)
     if (!res.ok) return { summary: "", skipped: true }
     const data = await res.json()
     const articles = (data.articles || []).slice(0, 6)
@@ -208,7 +219,7 @@ async function runWebSearch(query: string): Promise<{
     const q = encodeURIComponent(query.slice(0, 200))
     const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
       "&mode=artlist&maxrecords=10&timespan=2months&sort=DateDesc&format=json"
-    const res = await fetchWithTimeout(url, {}, 7000)
+    const res = await gdeltFetch(url)
     if (!res.ok) return { summary: "Web corroboration unavailable", trusted: 0, factChecks: 0, fringeOnly: false }
     const data = await res.json()
     const articles = data.articles || []
@@ -430,11 +441,11 @@ export async function POST(req: NextRequest) {
     // Use title + claim only for conflict probe — article body text is too noisy for GDELT
     const conflictProbe = [articleData.title, claim].filter(Boolean).join(" ")
 
-    // Run GDELT web search + live briefing in parallel
+    // Stagger the two GDELT calls by 700ms to avoid simultaneous 429s
     const [webSearch, briefing] = await Promise.all([
       runWebSearch(searchQuery),
-      runNewsBriefing(conflictProbe),
-    ])
+      new Promise(r => setTimeout(r, 700)).then(() => runNewsBriefing(conflictProbe)),
+    ]) as [Awaited<ReturnType<typeof runWebSearch>>, Awaited<ReturnType<typeof runNewsBriefing>>]
 
     // Run Gemini analysis
     const gemini = await runGeminiArticleAnalysis(articleData, claim, webSearch.summary, briefing.summary)

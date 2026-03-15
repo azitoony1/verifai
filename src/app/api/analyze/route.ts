@@ -25,6 +25,18 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, ms = 600
   }
 }
 
+// GDELT fetch with retry — handles 429 rate limiting from shared Render IPs
+async function gdeltFetch(url: string, retries = 3): Promise<Response> {
+  for (let i = 0; i < retries; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, 800 * i))
+    try {
+      const res = await fetchWithTimeout(url, {}, 8000)
+      if (res.status !== 429) return res
+    } catch { /* timeout — fall through to retry */ }
+  }
+  return new Response(null, { status: 429 })
+}
+
 // ── Conflict detection ─────────────────────────────────────────────────────
 const CONFLICT_KEYWORDS = [
   "war", "conflict", "attack", "strike", "bomb", "missile", "drone", "shoot",
@@ -58,7 +70,7 @@ async function runNewsBriefing(claim: string): Promise<NewsBriefing> {
     const q = encodeURIComponent(claim.slice(0, 200))
     const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
       "&mode=artlist&maxrecords=8&timespan=1month&sort=DateDesc&format=json"
-    const res = await fetchWithTimeout(url, {}, 6000)
+    const res = await gdeltFetch(url)
     if (!res.ok) return EMPTY_BRIEFING
     const data = await res.json()
     const articles = data.articles || []
@@ -98,7 +110,7 @@ async function runFactCheckPreCheck(claim: string): Promise<string> {
     const q = encodeURIComponent(claim.slice(0, 120) + " (" + factCheckDomains + ")")
     const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
       "&mode=artlist&maxrecords=5&timespan=6months&sort=DateDesc&format=json"
-    const res = await fetchWithTimeout(url, {}, 6000)
+    const res = await gdeltFetch(url)
     if (!res.ok) return "Fact-check pre-check unavailable"
     const data = await res.json()
     const articles = data.articles || []
@@ -299,7 +311,7 @@ async function runEquipmentLookup(designations: string[]): Promise<Record<string
       const q = encodeURIComponent(designation + " (oryxspioenkop.com OR armyrecognition.com OR globalsecurity.org)")
       const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
         "&mode=artlist&maxrecords=3&timespan=24months&sort=Relevance&format=json"
-      const res = await fetchWithTimeout(url, {}, 6000)
+      const res = await gdeltFetch(url)
       if (!res.ok) {
         results[designation] = "Lookup unavailable"
         return
@@ -375,7 +387,7 @@ async function runWebSearch(claim: string): Promise<{
     const q = encodeURIComponent(claim.slice(0, 200))
     const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
       "&mode=artlist&maxrecords=10&timespan=1month&sort=DateDesc&format=json"
-    const res = await fetchWithTimeout(url, {}, 7000)
+    const res = await gdeltFetch(url)
     if (!res.ok) return { summary: "Web corroboration unavailable", trusted: 0, factChecks: 0, fringeOnly: false }
     const data = await res.json()
     const articles = data.articles || []
@@ -650,12 +662,14 @@ export async function POST(req: NextRequest) {
     const exifRaw = formData.get("exif")
     const exifData = exifRaw ? JSON.parse(exifRaw as string) : null
 
-    // ── Fetch briefing first so Gemini gets live news context ─────────────
+    // ── Fetch briefing + reverse search in parallel, stagger GDELT calls ────
+    // GDELT rate-limits on shared IPs — stagger the 3 calls by 600ms each
+    const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
     const [briefing, reverseSearch, webSearch, factCheckPreCheck] = await Promise.all([
       claim ? runNewsBriefing(claim) : Promise.resolve(EMPTY_BRIEFING),
       runReverseImageSearch(imageBase64),
-      claim ? runWebSearch(claim) : Promise.resolve({ summary: "No claim — web search skipped", trusted: 0, factChecks: 0, fringeOnly: false }),
-      claim ? runFactCheckPreCheck(claim) : Promise.resolve("skipped"),
+      claim ? delay(600).then(() => runWebSearch(claim)) : Promise.resolve({ summary: "No claim — web search skipped", trusted: 0, factChecks: 0, fringeOnly: false }),
+      claim ? delay(1200).then(() => runFactCheckPreCheck(claim)) : Promise.resolve("skipped"),
     ])
 
     // ── Gemini vision analysis — now receives live briefing ───────────────
