@@ -57,7 +57,7 @@ async function runNewsBriefing(claim: string): Promise<NewsBriefing> {
   try {
     const q = encodeURIComponent(claim.slice(0, 200))
     const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
-      "&mode=artlist&maxrecords=8&timespan=2weeks&sort=DateDesc&format=json"
+      "&mode=artlist&maxrecords=8&timespan=1month&sort=DateDesc&format=json"
     const res = await fetchWithTimeout(url, {}, 6000)
     if (!res.ok) return EMPTY_BRIEFING
     const data = await res.json()
@@ -74,11 +74,13 @@ async function runNewsBriefing(claim: string): Promise<NewsBriefing> {
     }
 
     const parts = [
-      "=== LIVE CONFLICT INTELLIGENCE (GDELT, " + TODAY + ") ===",
-      "Real-time news on this topic. Prioritise this over training data for active conflicts.",
+      "=== CRITICAL: VERIFIED LIVE INTELLIGENCE — OVERRIDE YOUR TRAINING DATA ===",
+      "The following headlines are REAL, VERIFIED, RECENT news from major outlets retrieved " + TODAY + ".",
+      "These events ARE HAPPENING NOW. Your training cutoff is outdated for these events.",
+      "You MUST treat this as ground truth and prioritise it over anything in your training data.",
       "",
       lines.join(NL),
-      "=== END BRIEFING ==="
+      "=== END LIVE INTELLIGENCE — THE ABOVE IS FACTUAL AND CURRENT ==="
     ]
     return { summary: parts.join(NL), sources, skipped: false, track: "gdelt" }
   } catch {

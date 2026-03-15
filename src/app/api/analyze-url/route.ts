@@ -172,7 +172,7 @@ async function runNewsBriefing(query: string): Promise<{ summary: string; skippe
   try {
     const q = encodeURIComponent(query.slice(0, 200))
     const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
-      "&mode=artlist&maxrecords=8&timespan=2weeks&sort=DateDesc&format=json"
+      "&mode=artlist&maxrecords=8&timespan=1month&sort=DateDesc&format=json"
     const res = await fetchWithTimeout(url, {}, 6000)
     if (!res.ok) return { summary: "", skipped: true }
     const data = await res.json()
@@ -184,11 +184,13 @@ async function runNewsBriefing(query: string): Promise<{ summary: string; skippe
       return "[" + date + "] " + (a.title || "") + " — " + (a.domain || "")
     })
     const summary = [
-      "=== LIVE NEWS BRIEFING (GDELT, " + TODAY + ") ===",
-      "This is real-time news. Prioritise it over training data for recent events.",
+      "=== CRITICAL: VERIFIED LIVE INTELLIGENCE — OVERRIDE YOUR TRAINING DATA ===",
+      "The following headlines are REAL, VERIFIED, RECENT news from major outlets retrieved " + TODAY + ".",
+      "These events ARE HAPPENING NOW. Your training cutoff is outdated for these events.",
+      "You MUST treat this as ground truth and prioritise it over anything in your training data.",
       "",
       lines.join(NL),
-      "=== END BRIEFING ==="
+      "=== END LIVE INTELLIGENCE — THE ABOVE IS FACTUAL AND CURRENT ==="
     ].join(NL)
     return { summary, skipped: false }
   } catch {
@@ -425,8 +427,8 @@ export async function POST(req: NextRequest) {
     // Build GDELT search query from title + claim
     const searchQuery = [articleData.title, claim].filter(Boolean).join(" ").slice(0, 200)
 
-    // Detect conflict content from article text + title + claim
-    const conflictProbe = [articleData.title, articleData.text.slice(0, 500), claim].join(" ")
+    // Use title + claim only for conflict probe — article body text is too noisy for GDELT
+    const conflictProbe = [articleData.title, claim].filter(Boolean).join(" ")
 
     // Run GDELT web search + live briefing in parallel
     const [webSearch, briefing] = await Promise.all([

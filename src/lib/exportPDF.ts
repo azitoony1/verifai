@@ -2,12 +2,12 @@ import { jsPDF } from "jspdf"
 import { VerificationResult } from "./types"
 
 // ── Colour palette (light professional report) ────────────────────────────
-const INK       = "#111827"   // near-black for headings
-const BODY      = "#374151"   // dark gray for body text
-const MUTED     = "#6B7280"   // gray for labels / metadata
-const RULE      = "#E5E7EB"   // light rule lines
-const CARD      = "#F9FAFB"   // off-white card backgrounds
-const HEADER_BG = "#1A1F2E"   // dark header / cover
+const INK       = "#111827"
+const BODY      = "#374151"
+const MUTED     = "#6B7280"
+const RULE      = "#E5E7EB"
+const CARD      = "#F9FAFB"
+const HEADER_BG = "#1A1F2E"
 const TEAL      = "#0D9488"
 const BLUE      = "#2563EB"
 const AMBER     = "#D97706"
@@ -45,9 +45,6 @@ function stripLinks(text: string): string {
     .trim()
 }
 
-// jsPDF built-in fonts only cover Latin-1 (0x00–0xFF).
-// Detect runs of non-Latin-1 script (Hebrew, Arabic, CJK, etc.) and replace
-// them with a readable transliteration note so nothing overflows or corrupts.
 function sanitize(text: string): string {
   if (!text) return ""
   return text
@@ -70,10 +67,11 @@ export async function exportToPDF(
   const CW = PW - ML - MR
   let y = 0
 
+  const isArticle = result.mode === "article"
+
   function newPage() {
     doc.addPage()
     y = 20
-    // Subtle top rule on continuation pages
     doc.setDrawColor(RULE)
     doc.setLineWidth(0.3)
     doc.line(ML, 15, PW - MR, 15)
@@ -100,10 +98,8 @@ export async function exportToPDF(
     doc.rect(x, yy, w, h, "S")
   }
 
-  // ── Section header ────────────────────────────────────────────────────────
   function sectionHeader(title: string, color = BLUE) {
     checkPage(14)
-    // Thin colored left accent + label
     fillRect(ML, y, 3, 6, color)
     doc.setFontSize(8)
     doc.setFont("helvetica", "bold")
@@ -114,7 +110,6 @@ export async function exportToPDF(
     y += 5
   }
 
-  // ── Label + value row (for metadata) ─────────────────────────────────────
   function kvRow(label: string, value: string, even: boolean) {
     const rowH = 7
     if (even) fillRect(ML, y, CW, rowH, CARD)
@@ -124,7 +119,7 @@ export async function exportToPDF(
     doc.text(label.toUpperCase(), ML + 3, y + 4.8)
     doc.setFont("helvetica", "normal")
     doc.setTextColor(BODY)
-    doc.text(String(value).slice(0, 90), ML + 38, y + 4.8)
+    doc.text(sanitize(String(value)).slice(0, 90), ML + 48, y + 4.8)
     y += rowH
   }
 
@@ -132,10 +127,8 @@ export async function exportToPDF(
   // COVER BLOCK
   // ══════════════════════════════════════════════════════════════════════════
   fillRect(0, 0, PW, 52, HEADER_BG)
-  // Bottom accent strip
   fillRect(0, 49, PW, 3, vcColor(result.verdictColor))
 
-  // Logo mark
   fillRect(ML, 10, 10, 10, BLUE)
   doc.setFontSize(7)
   doc.setFont("helvetica", "bold")
@@ -160,55 +153,90 @@ export async function exportToPDF(
   y = 62
 
   // ══════════════════════════════════════════════════════════════════════════
-  // VERDICT + SCORES ROW
+  // VERDICT ROW (full width) + 3 SCORE BOXES
   // ══════════════════════════════════════════════════════════════════════════
   const vc = vcColor(result.verdictColor)
-  const boxH = 28
-  const scoreBoxW = 42
 
-  // Verdict box (left, wider)
-  const verdictBoxW = CW - scoreBoxW * 2 - 8
-  fillRect(ML, y, verdictBoxW, boxH, CARD)
-  strokeRect(ML, y, verdictBoxW, boxH, RULE)
-  // Colored top border on verdict box
-  fillRect(ML, y, verdictBoxW, 2, vc)
+  // Row 1: Verdict full width
+  const verdictH = 20
+  fillRect(ML, y, CW, verdictH, CARD)
+  strokeRect(ML, y, CW, verdictH, RULE)
+  fillRect(ML, y, CW, 2, vc)
 
-  doc.setFontSize(14)
+  doc.setFontSize(15)
   doc.setFont("helvetica", "bold")
   doc.setTextColor(vc)
-  doc.text(result.verdict, ML + 5, y + 14)
+  doc.text(result.verdict, ML + 5, y + 12)
+
   doc.setFontSize(7.5)
   doc.setFont("helvetica", "normal")
   doc.setTextColor(MUTED)
-  doc.text(result.confidence + " CONFIDENCE", ML + 5, y + 21)
+  doc.text(result.confidence + " CONFIDENCE", ML + 5, y + 17.5)
 
-  // Score box helper
+  // Writing style badge (article mode)
+  if (isArticle && result.writingStyle) {
+    const wsLabel = "STYLE: " + result.writingStyle.toUpperCase()
+    doc.setFontSize(7)
+    doc.setFont("helvetica", "bold")
+    doc.setTextColor(BODY)
+    const wsW = doc.getTextWidth(wsLabel)
+    doc.text(wsLabel, PW - MR - wsW - 3, y + 12)
+  }
+
+  y += verdictH + 4
+
+  // Row 2: 3 score boxes
+  const scoreBoxW = Math.floor((CW - 8) / 3)
+  const boxH = 26
+
   function scoreBox(label: string, score: number, xOff: number) {
-    const bx = ML + verdictBoxW + 4 + xOff
+    const bx = ML + xOff
     fillRect(bx, y, scoreBoxW, boxH, CARD)
     strokeRect(bx, y, scoreBoxW, boxH, RULE)
     const sc = scoreColor(score)
     fillRect(bx, y, scoreBoxW, 2, sc)
-    doc.setFontSize(6.5)
+    doc.setFontSize(6)
     doc.setFont("helvetica", "bold")
     doc.setTextColor(MUTED)
     doc.text(label, bx + 4, y + 9)
-    // Score number — large
-    doc.setFontSize(20)
+    doc.setFontSize(19)
     doc.setFont("helvetica", "bold")
     doc.setTextColor(sc)
     doc.text(String(score), bx + 4, y + 21)
-    // "/ 100" on its own line below — no overlap possible
     doc.setFontSize(7)
     doc.setFont("helvetica", "normal")
     doc.setTextColor(MUTED)
-    doc.text("/ 100", bx + 4, y + 26.5)
+    doc.text("/ 100", bx + 4, y + 25)
   }
 
+  const scoreLabel1 = isArticle ? "SOURCE CRED." : "IMAGE AUTH."
+  const scoreLabel2 = isArticle ? "CONTENT CRED." : "CLAIM ACCURATE"
+
   scoreBox("OVERALL", result.overallScore ?? result.score, 0)
-  scoreBox("IMAGE AUTH.", result.imageAuthenticityScore ?? result.score, scoreBoxW + 4)
+  scoreBox(scoreLabel1, result.imageAuthenticityScore ?? result.score, scoreBoxW + 4)
+  scoreBox(scoreLabel2, result.claimAccuracyScore ?? result.score, (scoreBoxW + 4) * 2)
 
   y += boxH + 10
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARTICLE INFO (article mode only)
+  // ══════════════════════════════════════════════════════════════════════════
+  if (isArticle && (result.articleTitle || result.articleDomain)) {
+    checkPage(30)
+    sectionHeader("Article Info", BLUE)
+
+    const infoEntries: [string, string][] = []
+    if (result.articleTitle)  infoEntries.push(["Title",  result.articleTitle])
+    if (result.articleDomain) infoEntries.push(["Domain", result.articleDomain])
+    if (result.articleAuthor) infoEntries.push(["Author", result.articleAuthor])
+    if (result.articleDate)   infoEntries.push(["Date",   result.articleDate])
+
+    infoEntries.forEach(([k, v], i) => {
+      checkPage(8)
+      kvRow(k, v, i % 2 === 0)
+    })
+    y += 8
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // SUBMITTED CLAIM
@@ -227,10 +255,9 @@ export async function exportToPDF(
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // SUBMITTED IMAGE
+  // SUBMITTED IMAGE (image mode only)
   // ══════════════════════════════════════════════════════════════════════════
-  if (imageDataUrl) {
-    // Measure natural dimensions to preserve aspect ratio
+  if (!isArticle && imageDataUrl) {
     const imgDims = await new Promise<{ w: number; h: number }>(resolve => {
       const img = new Image()
       img.onload = () => resolve({ w: img.naturalWidth || img.width || 4, h: img.naturalHeight || img.height || 3 })
@@ -241,21 +268,18 @@ export async function exportToPDF(
       }
     })
 
-    // Fit image within maxW × maxH while preserving aspect ratio (like CSS object-fit: contain)
     const maxW = CW
     const maxH = 110
     const ratio = imgDims.w / Math.max(imgDims.h, 1)
     let imgW: number, imgH: number
     if (ratio > maxW / maxH) {
-      imgW = maxW
-      imgH = maxW / ratio
+      imgW = maxW; imgH = maxW / ratio
     } else {
-      imgH = maxH
-      imgW = maxH * ratio
+      imgH = maxH; imgW = maxH * ratio
     }
     imgW = Math.round(imgW)
     imgH = Math.round(imgH)
-    const imgX = ML + (CW - imgW) / 2   // centre horizontally
+    const imgX = ML + (CW - imgW) / 2
 
     checkPage(imgH + 20)
     sectionHeader("Submitted Image")
@@ -274,7 +298,6 @@ export async function exportToPDF(
   // ══════════════════════════════════════════════════════════════════════════
   // EXECUTIVE SUMMARY
   // ══════════════════════════════════════════════════════════════════════════
-  // Set font before measuring so splitTextToSize uses correct metrics
   doc.setFontSize(9)
   doc.setFont("helvetica", "normal")
   const summaryLines = doc.splitTextToSize(sanitize(result.executiveSummary || ""), CW - 22)
@@ -284,13 +307,41 @@ export async function exportToPDF(
 
   fillRect(ML, y, CW, summaryH, CARD)
   strokeRect(ML, y, CW, summaryH, RULE)
-  fillRect(ML, y, 3, summaryH, TEAL)   // accent bar — drawn before text
+  fillRect(ML, y, 3, summaryH, TEAL)
 
   doc.setFontSize(9)
   doc.setFont("helvetica", "normal")
   doc.setTextColor(BODY)
   doc.text(summaryLines, ML + 8, y + 8)
   y += summaryH + 10
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // KEY CLAIMS (article mode only)
+  // ══════════════════════════════════════════════════════════════════════════
+  if (isArticle && result.keyClaims && result.keyClaims.length > 0) {
+    checkPage(20)
+    sectionHeader("Key Claims", BLUE)
+
+    for (let i = 0; i < result.keyClaims.length; i++) {
+      const kc = result.keyClaims[i]
+      doc.setFontSize(7.5)
+      doc.setFont("helvetica", "normal")
+      const kcLines = doc.splitTextToSize(sanitize(kc), CW - 14)
+      const kcH = kcLines.length * 4.8 + 6
+      checkPage(kcH + 2)
+      if (i % 2 === 0) fillRect(ML, y, CW, kcH, CARD)
+      doc.setFontSize(8)
+      doc.setFont("helvetica", "bold")
+      doc.setTextColor(BLUE)
+      doc.text("•", ML + 3, y + kcH / 2 + 1.5)
+      doc.setFontSize(7.5)
+      doc.setFont("helvetica", "normal")
+      doc.setTextColor(BODY)
+      doc.text(kcLines, ML + 8, y + 5)
+      y += kcH
+    }
+    y += 8
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // FINDINGS / FLAGS
@@ -309,31 +360,25 @@ export async function exportToPDF(
     const cardH = 9 + detailLines.length * 4.8 + 5
     checkPage(cardH + 3)
 
-    // Card background + border
     fillRect(ML, y, CW, cardH, "#FFFFFF")
     strokeRect(ML, y, CW, cardH, RULE)
-    // Colored left border
     fillRect(ML, y, 3, cardH, sc)
 
-    // Severity pill
     doc.setFontSize(6)
     doc.setFont("helvetica", "bold")
     doc.setTextColor(sc)
     doc.text(flag.severity.toUpperCase(), ML + 7, y + 5.5)
 
-    // Phase label
     doc.setFont("helvetica", "normal")
     doc.setTextColor(MUTED)
     const sevW = doc.getTextWidth(flag.severity.toUpperCase())
     doc.text("·  " + flag.phase, ML + 7 + sevW + 2, y + 5.5)
 
-    // Flag title
     doc.setFontSize(8.5)
     doc.setFont("helvetica", "bold")
     doc.setTextColor(INK)
     doc.text(sanitize(flag.title), ML + 7, y + 11)
 
-    // Detail text
     doc.setFontSize(7.5)
     doc.setFont("helvetica", "normal")
     doc.setTextColor(BODY)
@@ -347,7 +392,6 @@ export async function exportToPDF(
   // ══════════════════════════════════════════════════════════════════════════
   // DEVIL'S ADVOCATE
   // ══════════════════════════════════════════════════════════════════════════
-  // Set font before measuring
   doc.setFontSize(8.5)
   doc.setFont("helvetica", "italic")
   const daLines = doc.splitTextToSize(sanitize(result.devilsAdvocate || ""), CW - 22)
@@ -376,31 +420,27 @@ export async function exportToPDF(
     const pc = phaseColor(ph.status)
     doc.setFontSize(7)
     doc.setFont("helvetica", "normal")
-    const summLines = doc.splitTextToSize(sanitize(ph.summary || ""), CW - 38)
+    const summLines = doc.splitTextToSize(sanitize(stripLinks(ph.summary || "")), CW - 38)
     const rowH = Math.max(10, summLines.length * 4.5 + 8)
     checkPage(rowH + 2)
 
     if (i % 2 === 0) fillRect(ML, y, CW, rowH, CARD)
     hRule(y + rowH, RULE)
 
-    // Status badge
     doc.setFontSize(6)
     doc.setFont("helvetica", "bold")
     doc.setTextColor(pc)
     doc.text(ph.status.toUpperCase(), ML + 3, y + rowH / 2 + 2)
 
-    // Vertical divider
     doc.setDrawColor(RULE)
     doc.setLineWidth(0.3)
     doc.line(ML + 16, y + 2, ML + 16, y + rowH - 2)
 
-    // Phase name
     doc.setFontSize(8)
     doc.setFont("helvetica", "bold")
     doc.setTextColor(INK)
     doc.text(ph.name, ML + 19, y + 6)
 
-    // Summary
     doc.setFontSize(7)
     doc.setFont("helvetica", "normal")
     doc.setTextColor(MUTED)
@@ -412,9 +452,9 @@ export async function exportToPDF(
   y += 8
 
   // ══════════════════════════════════════════════════════════════════════════
-  // EXIF METADATA
+  // EXIF METADATA (image mode only)
   // ══════════════════════════════════════════════════════════════════════════
-  if (result.metadata && Object.values(result.metadata).some(Boolean)) {
+  if (!isArticle && result.metadata && Object.values(result.metadata).some(Boolean)) {
     checkPage(24)
     sectionHeader("Image Metadata (EXIF)")
     const entries = Object.entries(result.metadata).filter(([, v]) => v)
