@@ -358,28 +358,30 @@ async function runReverseImageSearch(imageBase64: string): Promise<string> {
     // Empty or missing webDetection = no indexed matches
     if (!web || Object.keys(web).length === 0)
       return "No prior web appearances — not indexed on the open web"
-    const hasMatches = web.fullMatchingImages?.length || web.partialMatchingImages?.length || web.pagesWithMatchingImages?.length
-    if (!hasMatches) return "No prior web appearances — not indexed on the open web"
+    const exactCount = web.fullMatchingImages?.length || 0
+    const partialCount = web.partialMatchingImages?.length || 0
+    const pages: Array<{ url: string; pageTitle?: string }> = web.pagesWithMatchingImages || []
 
-    const matches: string[] = []
-    if (web.fullMatchingImages?.length)
-      matches.push(web.fullMatchingImages.length + " exact match(es) found online")
-    if (web.partialMatchingImages?.length)
-      matches.push(web.partialMatchingImages.length + " partial/similar match(es)")
-    if (web.bestGuessLabels?.length) {
-      // Filter out generic image-type labels (poster, screenshot, photo, etc.) — only show meaningful subject labels
-      const NOISE = ["poster", "screenshot", "photo", "image", "picture", "illustration", "drawing", "painting", "artwork", "graphic", "banner", "thumbnail"]
-      const meaningful = web.bestGuessLabels.filter((l: { label: string }) => !NOISE.some(n => l.label.toLowerCase().includes(n)))
-      if (meaningful.length) matches.push("Best guess: " + meaningful.map((l: { label: string }) => l.label).join(", "))
+    // No matches at all — image has not been found elsewhere
+    if (!exactCount && !partialCount) {
+      return "No prior web appearances found — this image does not appear to have been used elsewhere online."
     }
-    if (web.pagesWithMatchingImages?.length) {
-      matches.push("Found in: " + web.pagesWithMatchingImages.slice(0, 5)
-        .map((p: { url: string; pageTitle?: string }) => "[" + (p.pageTitle || "article") + "](" + p.url + ")").join(" · "))
-    } else if (web.fullMatchingImages?.length) {
-      matches.push("Image URLs: " + web.fullMatchingImages.slice(0, 3)
-        .map((i: { url: string }, idx: number) => "[source " + (idx + 1) + "](" + i.url + ")").join(" "))
+
+    // Build match summary
+    const matchParts: string[] = []
+    if (exactCount) matchParts.push(exactCount + " exact match" + (exactCount > 1 ? "es" : ""))
+    if (partialCount) matchParts.push(partialCount + " partial/similar match" + (partialCount > 1 ? "es" : ""))
+    let result = matchParts.join(" and ") + " found — this image has been used before."
+
+    // Show the articles it appeared in (with titles as links)
+    if (pages.length > 0) {
+      const links = pages.slice(0, 5).map((p, i) =>
+        "[" + (p.pageTitle || "article " + (i + 1)) + "](" + p.url + ")"
+      )
+      result += " Previously appeared in: " + links.join(" · ")
     }
-    return matches.join(". ")
+
+    return result
   } catch { return "Reverse image search timed out or failed" }
 }
 
@@ -607,8 +609,8 @@ function assembleResult(
     })
   } else if (reverseSearch.includes("exact match")) {
     flags.push({ phase: "Reverse Image Search", severity: "high" as Severity, title: "Prior appearances found online", detail: reverseSearch })
-  } else if (reverseSearch.includes("No prior") || reverseSearch.includes("consistent with original")) {
-    flags.push({ phase: "Reverse Image Search", severity: "clean" as Severity, title: "No prior web appearances", detail: "Not found in web indexes — consistent with original material." })
+  } else if (reverseSearch.includes("No prior web appearances")) {
+    flags.push({ phase: "Reverse Image Search", severity: "clean" as Severity, title: "No prior web appearances found", detail: reverseSearch })
   } else {
     flags.push({ phase: "Reverse Image Search", severity: "info" as Severity, title: "Reverse search result", detail: reverseSearch })
   }
