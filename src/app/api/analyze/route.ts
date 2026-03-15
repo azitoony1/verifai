@@ -366,8 +366,12 @@ async function runReverseImageSearch(imageBase64: string): Promise<string> {
       matches.push(web.fullMatchingImages.length + " exact match(es) found online")
     if (web.partialMatchingImages?.length)
       matches.push(web.partialMatchingImages.length + " partial/similar match(es)")
-    if (web.bestGuessLabels?.length)
-      matches.push("Best guess: " + web.bestGuessLabels.map((l: { label: string }) => l.label).join(", "))
+    if (web.bestGuessLabels?.length) {
+      // Filter out generic image-type labels (poster, screenshot, photo, etc.) — only show meaningful subject labels
+      const NOISE = ["poster", "screenshot", "photo", "image", "picture", "illustration", "drawing", "painting", "artwork", "graphic", "banner", "thumbnail"]
+      const meaningful = web.bestGuessLabels.filter((l: { label: string }) => !NOISE.some(n => l.label.toLowerCase().includes(n)))
+      if (meaningful.length) matches.push("Best guess: " + meaningful.map((l: { label: string }) => l.label).join(", "))
+    }
     if (web.pagesWithMatchingImages?.length) {
       matches.push("Found in: " + web.pagesWithMatchingImages.slice(0, 5)
         .map((p: { url: string; pageTitle?: string }) => "[" + (p.pageTitle || "article") + "](" + p.url + ")").join(" · "))
@@ -389,7 +393,7 @@ async function runWebSearch(claim: string): Promise<{
   try {
     const q = encodeURIComponent(claim.slice(0, 200))
     const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
-      "&mode=artlist&maxrecords=10&timespan=1month&sort=DateDesc&format=json"
+      "&mode=artlist&maxrecords=10&timespan=12months&sort=DateDesc&format=json"
     const res = await gdeltFetch(url)
     if (!res.ok) return { summary: "Web corroboration unavailable", trusted: 0, factChecks: 0, fringeOnly: false }
     const data = await res.json()
@@ -448,6 +452,57 @@ async function runWeatherCheck(lat: number, lon: number, dateStr: string): Promi
   } catch { return "timed out" }
 }
 
+// ── PHASE 4b: Historical incident check ───────────────────────────────────
+// Reverse-geocodes the GPS coordinates, then searches GDELT for military
+// incidents at that location in a ±10-day window around the EXIF date.
+async function reverseGeocode(lat: number, lon: number): Promise<string> {
+  try {
+    const url = "https://nominatim.openstreetmap.org/reverse?lat=" + lat + "&lon=" + lon + "&format=json"
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": "VerifAI/1.0 (osint-verification)" } }, 5000)
+    if (!res.ok) return ""
+    const data = await res.json()
+    const a = data.address || {}
+    return [a.city || a.town || a.village || a.county, a.state, a.country].filter(Boolean).join(", ")
+  } catch { return "" }
+}
+
+async function runHistoricalIncidentCheck(lat: number, lon: number, dateStr: string): Promise<string> {
+  try {
+    const location = await reverseGeocode(lat, lon)
+    if (!location) return "skipped — could not resolve GPS to location"
+
+    const date = new Date(dateStr)
+    if (isNaN(date.getTime())) return "skipped — could not parse EXIF date"
+
+    const start = new Date(date); start.setDate(start.getDate() - 10)
+    const end   = new Date(date); end.setDate(end.getDate() + 10)
+    const fmt = (d: Date) => d.toISOString().replace(/\D/g, "").slice(0, 14)
+
+    const terms = encodeURIComponent(
+      "(missile OR strike OR attack OR shelling OR bombing OR airstrike OR explosion OR rocket OR artillery) " + location
+    )
+    const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + terms +
+      "&mode=artlist&maxrecords=5&STARTDATETIME=" + fmt(start) + "&ENDDATETIME=" + fmt(end) +
+      "&sort=DateDesc&format=json"
+
+    const res = await gdeltFetch(url)
+    if (!res.ok) return "Historical incident lookup unavailable"
+    const data = await res.json()
+    const articles = data.articles || []
+
+    if (!articles.length) {
+      return "No open-source military incident records found for " + location + " around " + date.toISOString().slice(0, 10)
+    }
+
+    const lines = articles.slice(0, 4).map((a: { seendate?: string; title?: string; domain?: string; url?: string }) => {
+      const raw = a.seendate || ""
+      const d = raw.length >= 8 ? raw.slice(0,4)+"-"+raw.slice(4,6)+"-"+raw.slice(6,8) : "?"
+      return "[" + d + "] [" + (a.title || "article") + "](" + (a.url || "") + ") — " + (a.domain || "")
+    })
+    return "Incidents recorded near " + location + " (±10 days of " + date.toISOString().slice(0, 10) + "):\n" + lines.join("\n")
+  } catch { return "Historical incident check failed" }
+}
+
 // ── Derive verdict from all signals (not just Gemini) ─────────────────────
 function deriveVerdict(
   imageScore: number, claimScore: number, hasClaim: boolean,
@@ -479,6 +534,7 @@ function assembleResult(
   exifData: Record<string, unknown> | null,
   factCheckPreCheck: string,
   weatherResult: string,
+  incidentResult: string,
   militaryDeep: MilitaryAnalysisResult,
   equipmentLookup: Record<string, string>,
   briefing: NewsBriefing,
@@ -589,6 +645,16 @@ function assembleResult(
     flags.push({ phase: "Physical Verification", severity: "info" as Severity, title: "Historical weather", detail: weatherResult })
   }
 
+  // Historical incident records
+  if (incidentResult && !incidentResult.includes("skipped") && !incidentResult.includes("failed")) {
+    const hasIncidents = incidentResult.includes("Incidents recorded")
+    flags.push({
+      phase: "Physical Verification", severity: hasIncidents ? "high" as Severity : "clean" as Severity,
+      title: hasIncidents ? "Military incidents found near this location/date" : "No incident records found near this location/date",
+      detail: incidentResult
+    })
+  }
+
   // ── Score computation ────────────────────────────────────────────────────
   const imageAuthenticityScore = Math.round((gemini.image_authenticity_score as number) ?? 50)
 
@@ -611,6 +677,7 @@ function assembleResult(
   const overallScore = claim
     ? Math.round(imageAuthenticityScore * 0.4 + claimAccuracyScore * 0.6)
     : imageAuthenticityScore
+  // When no claim is given, overall = image auth score by design (nothing to verify against)
 
   const verdict = deriveVerdict(
     imageAuthenticityScore, claimAccuracyScore, !!claim,
@@ -623,7 +690,7 @@ function assembleResult(
     { name: "Triage & Pre-Check", status: (factCheckPreCheck.length > 30 && !factCheckPreCheck.includes("No existing") && !factCheckPreCheck.includes("failed")) ? "warn" as const : "pass" as const, summary: factCheckPreCheck !== "skipped" ? factCheckPreCheck.slice(0, 200) : "Emotional framing: " + ((gemini.emotional_framing as string) || "assessed") },
     { name: "Image Forensics", status: (gemini.visual_artifacts as string)?.toLowerCase().includes("no sign") ? "pass" as const : "warn" as const, summary: (gemini.visual_artifacts as string) || "Assessed" },
     { name: "Scene Description", status: "info" as const, summary: (gemini.scene_description as string) || "See flags" },
-    { name: "Physical Verification", status: "info" as const, summary: [(gemini.physical_consistency as string), weatherResult].filter(s => s && !s.includes("skipped") && !s.includes("timed")).join(" | ") || "Assessed" },
+    { name: "Physical Verification", status: incidentResult.includes("Incidents recorded") ? "warn" as const : "info" as const, summary: [(gemini.physical_consistency as string), weatherResult, incidentResult].filter(s => s && !s.includes("skipped") && !s.includes("timed") && !s.includes("failed")).join(" | ") || "Assessed" },
     { name: "Military Analysis", status: (!militaryDeep.skipped && militaryDeep.redFlags?.length > 0) ? "warn" as const : (gemini.military_analysis as string)?.includes("No military") ? "pass" as const : "info" as const, summary: militaryDeep.deepSummary || (gemini.military_analysis as string) || "No equipment identified" },
     { name: "Temporal Analysis", status: "info" as const, summary: (gemini.temporal_analysis as string) || "No inconsistencies detected" },
     { name: "Geolocation Clues", status: "info" as const, summary: (gemini.geolocation_clues as string) || "No identifying visual clues in frame" },
@@ -689,18 +756,24 @@ export async function POST(req: NextRequest) {
     const designations = (militaryDeep.equipment || []).map((e: MilitaryItem) => e.designation)
     const equipmentLookup = designations.length > 0 ? await runEquipmentLookup(designations) : {}
 
-    // ── Weather check — only if GPS + date in EXIF ─────────────────────────
+    // ── Weather + historical incident check — only if GPS + date in EXIF ────
     let weatherResult = "skipped — no GPS in metadata"
+    let incidentResult = "skipped — no GPS in metadata"
     if (exifData?.gps && exifData?.dateTime) {
       const parts = String(exifData.gps).split(",").map((s: string) => s.trim())
       const lat = parseFloat(parts[0])
       const lon = parseFloat(parts[1])
-      if (!isNaN(lat) && !isNaN(lon)) weatherResult = await runWeatherCheck(lat, lon, exifData.dateTime)
+      if (!isNaN(lat) && !isNaN(lon)) {
+        ;[weatherResult, incidentResult] = await Promise.all([
+          runWeatherCheck(lat, lon, exifData.dateTime),
+          runHistoricalIncidentCheck(lat, lon, exifData.dateTime),
+        ])
+      }
     }
 
     const result = assembleResult(
       geminiResult, reverseSearch, webSearch, exifData,
-      factCheckPreCheck, weatherResult, militaryDeep, equipmentLookup, briefing, claim
+      factCheckPreCheck, weatherResult, incidentResult, militaryDeep, equipmentLookup, briefing, claim
     )
     return NextResponse.json(result)
 
