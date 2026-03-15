@@ -358,6 +358,9 @@ async function runReverseImageSearch(imageBase64: string): Promise<string> {
     // Empty or missing webDetection = no indexed matches
     if (!web || Object.keys(web).length === 0)
       return "No prior web appearances — not indexed on the open web"
+    const hasMatches = web.fullMatchingImages?.length || web.partialMatchingImages?.length || web.pagesWithMatchingImages?.length
+    if (!hasMatches) return "No prior web appearances — not indexed on the open web"
+
     const matches: string[] = []
     if (web.fullMatchingImages?.length)
       matches.push(web.fullMatchingImages.length + " exact match(es) found online")
@@ -372,7 +375,7 @@ async function runReverseImageSearch(imageBase64: string): Promise<string> {
       matches.push("Image URLs: " + web.fullMatchingImages.slice(0, 3)
         .map((i: { url: string }, idx: number) => "[source " + (idx + 1) + "](" + i.url + ")").join(" "))
     }
-    return matches.length ? matches.join(". ") : "No prior web appearances — not indexed on the open web"
+    return matches.join(". ")
   } catch { return "Reverse image search timed out or failed" }
 }
 
