@@ -178,6 +178,42 @@ function isConflictContent(text: string): boolean {
   return CONFLICT_KEYWORDS.some(kw => lower.includes(kw))
 }
 
+async function buildWikipediaBrief(query: string): Promise<string> {
+  if (!query.trim() || !isConflictContent(query)) return ""
+  try {
+    const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" +
+      encodeURIComponent(query.slice(0, 150)) + "&srlimit=3&format=json&origin=*"
+    const searchRes = await fetchWithTimeout(searchUrl,
+      { headers: { "User-Agent": "VerifAI/1.0 (osint-verification; contact: research)" } }, 6000)
+    if (!searchRes.ok) return ""
+    const searchData = await searchRes.json()
+    const results: Array<{ title: string }> = searchData.query?.search || []
+    if (!results.length) return ""
+
+    const summaries: string[] = []
+    for (const r of results.slice(0, 2)) {
+      try {
+        const summaryRes = await fetchWithTimeout(
+          "https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(r.title),
+          { headers: { "User-Agent": "VerifAI/1.0 (osint-verification; contact: research)" } }, 5000)
+        if (!summaryRes.ok) continue
+        const s = await summaryRes.json()
+        if (s.extract) summaries.push("[ " + r.title + " ]\n" + s.extract.slice(0, 1000))
+      } catch { continue }
+    }
+    if (!summaries.length) return ""
+
+    return [
+      "=== WIKIPEDIA BACKGROUND BRIEF (encyclopaedic, continuously updated) ===",
+      "The following is verified background context from Wikipedia.",
+      "Treat this as established fact when assessing the article/image.",
+      "",
+      summaries.join("\n\n"),
+      "=== END WIKIPEDIA BRIEF ===",
+    ].join("\n")
+  } catch { return "" }
+}
+
 async function runNewsBriefing(query: string): Promise<{ summary: string; skipped: boolean }> {
   if (!query.trim() || !isConflictContent(query)) return { summary: "", skipped: true }
   try {
@@ -260,7 +296,8 @@ async function runGeminiArticleAnalysis(
   articleData: ArticleData,
   claim: string,
   webSearchSummary: string,
-  newsBriefing: string
+  newsBriefing: string,
+  wikiBrief: string
 ) {
   const model = genAI.getGenerativeModel({
     model: "gemini-3-flash-preview",
@@ -274,6 +311,8 @@ async function runGeminiArticleAnalysis(
   const promptParts = [
     "You are a professional OSINT media analyst and fact-checker.",
     "Today's date: " + TODAY + ". Your training data has a cutoff — do NOT assume events are false just because they are recent or unknown to you.",
+    "",
+    wikiBrief || "",
     "",
     newsBriefing || "",
     "",
@@ -441,14 +480,15 @@ export async function POST(req: NextRequest) {
     // Use title + claim only for conflict probe — article body text is too noisy for GDELT
     const conflictProbe = [articleData.title, claim].filter(Boolean).join(" ")
 
-    // Stagger the two GDELT calls by 700ms to avoid simultaneous 429s
-    const [webSearch, briefing] = await Promise.all([
+    // Stagger GDELT calls, fetch Wikipedia in parallel (no rate limit)
+    const [webSearch, briefing, wikiBrief] = await Promise.all([
       runWebSearch(searchQuery),
       new Promise(r => setTimeout(r, 700)).then(() => runNewsBriefing(conflictProbe)),
-    ]) as [Awaited<ReturnType<typeof runWebSearch>>, Awaited<ReturnType<typeof runNewsBriefing>>]
+      buildWikipediaBrief(conflictProbe),
+    ]) as [Awaited<ReturnType<typeof runWebSearch>>, Awaited<ReturnType<typeof runNewsBriefing>>, string]
 
     // Run Gemini analysis
-    const gemini = await runGeminiArticleAnalysis(articleData, claim, webSearch.summary, briefing.summary)
+    const gemini = await runGeminiArticleAnalysis(articleData, claim, webSearch.summary, briefing.summary, wikiBrief)
 
     // Domain classification
     const domainClass = articleData.domain ? classifyDomain(articleData.domain) : "unknown"

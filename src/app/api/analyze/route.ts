@@ -53,6 +53,45 @@ function isConflictContent(text: string): boolean {
   return CONFLICT_KEYWORDS.some(kw => lower.includes(kw))
 }
 
+// ── Wikipedia background brief ─────────────────────────────────────────────
+// Searches Wikipedia for the top 2 articles matching the claim/topic and
+// injects their summaries as verified background context into Gemini's prompt.
+async function buildWikipediaBrief(query: string): Promise<string> {
+  if (!query.trim() || !isConflictContent(query)) return ""
+  try {
+    const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" +
+      encodeURIComponent(query.slice(0, 150)) + "&srlimit=3&format=json&origin=*"
+    const searchRes = await fetchWithTimeout(searchUrl,
+      { headers: { "User-Agent": "VerifAI/1.0 (osint-verification; contact: research)" } }, 6000)
+    if (!searchRes.ok) return ""
+    const searchData = await searchRes.json()
+    const results: Array<{ title: string }> = searchData.query?.search || []
+    if (!results.length) return ""
+
+    const summaries: string[] = []
+    for (const r of results.slice(0, 2)) {
+      try {
+        const summaryRes = await fetchWithTimeout(
+          "https://en.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(r.title),
+          { headers: { "User-Agent": "VerifAI/1.0 (osint-verification; contact: research)" } }, 5000)
+        if (!summaryRes.ok) continue
+        const s = await summaryRes.json()
+        if (s.extract) summaries.push("[ " + r.title + " ]\n" + s.extract.slice(0, 1000))
+      } catch { continue }
+    }
+    if (!summaries.length) return ""
+
+    return [
+      "=== WIKIPEDIA BACKGROUND BRIEF (encyclopaedic, continuously updated) ===",
+      "The following is verified background context from Wikipedia.",
+      "Treat this as established fact when assessing the article/image.",
+      "",
+      summaries.join("\n\n"),
+      "=== END WIKIPEDIA BRIEF ===",
+    ].join("\n")
+  } catch { return "" }
+}
+
 // ── News briefing interface ────────────────────────────────────────────────
 interface NewsBriefing {
   summary: string
@@ -125,7 +164,7 @@ async function runFactCheckPreCheck(claim: string): Promise<string> {
 
 // ── PHASE 1: Gemini vision analysis (with dual scoring) ────────────────────
 async function runGeminiAnalysis(
-  imageBase64: string, mimeType: string, claim: string, briefing: NewsBriefing
+  imageBase64: string, mimeType: string, claim: string, briefing: NewsBriefing, wikiBrief: string
 ) {
   const model = genAI.getGenerativeModel({
     model: "gemini-3-flash-preview",
@@ -138,6 +177,8 @@ async function runGeminiAnalysis(
   const promptParts = [
     "You are a professional OSINT forensic analyst. Your ONLY evidence is what you directly observe in this image.",
     "Today's date: " + TODAY + ". Any date on or before today is NOT suspicious. Only flag a date as anachronistic if it is in the future relative to today.",
+    "",
+    wikiBrief || "",
     "",
     briefing.skipped ? "" : briefing.summary,
     "",
@@ -734,18 +775,18 @@ export async function POST(req: NextRequest) {
     const exifRaw = formData.get("exif")
     const exifData = exifRaw ? JSON.parse(exifRaw as string) : null
 
-    // ── Fetch briefing + reverse search in parallel, stagger GDELT calls ────
-    // GDELT rate-limits on shared IPs — stagger the 3 calls by 600ms each
+    // ── Fetch all context in parallel, stagger GDELT calls to avoid 429 ────
     const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
-    const [briefing, reverseSearch, webSearch, factCheckPreCheck] = await Promise.all([
+    const [briefing, wikiBrief, reverseSearch, webSearch, factCheckPreCheck] = await Promise.all([
       claim ? runNewsBriefing(claim) : Promise.resolve(EMPTY_BRIEFING),
+      claim ? buildWikipediaBrief(claim) : Promise.resolve(""),
       runReverseImageSearch(imageBase64),
       claim ? delay(600).then(() => runWebSearch(claim)) : Promise.resolve({ summary: "No claim — web search skipped", trusted: 0, factChecks: 0, fringeOnly: false }),
       claim ? delay(1200).then(() => runFactCheckPreCheck(claim)) : Promise.resolve("skipped"),
     ])
 
-    // ── Gemini vision analysis — now receives live briefing ───────────────
-    const geminiResult = await runGeminiAnalysis(imageBase64, mimeType, claim, briefing)
+    // ── Gemini vision analysis — receives Wikipedia + live briefing ───────
+    const geminiResult = await runGeminiAnalysis(imageBase64, mimeType, claim, briefing, wikiBrief)
 
     // ── Conditional deep military pass ────────────────────────────────────
     const hasMilitary = geminiResult.has_military_equipment === true ||
