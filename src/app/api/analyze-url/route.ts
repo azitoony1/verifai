@@ -205,8 +205,9 @@ async function buildWikipediaBrief(query: string): Promise<string> {
 
     return [
       "=== WIKIPEDIA BACKGROUND BRIEF (encyclopaedic, continuously updated) ===",
-      "The following is verified background context from Wikipedia.",
-      "Treat this as established fact when assessing the article/image.",
+      "The following is background context from Wikipedia. Use it as a factual baseline.",
+      "Do NOT hedge on events or facts that Wikipedia clearly documents (e.g. if Wikipedia says a war started, do not say 'if this war is real').",
+      "You MAY still hedge on specific claims that go beyond what Wikipedia documents (e.g. exact locations, individual casualties, unverified details).",
       "",
       summaries.join("\n\n"),
       "=== END WIKIPEDIA BRIEF ===",
