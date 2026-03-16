@@ -427,49 +427,39 @@ async function runReverseImageSearch(imageBase64: string): Promise<string> {
   } catch { return "Reverse image search timed out or failed" }
 }
 
-// ── PHASE 3: Web corroboration (GDELT — free, no key) ─────────────────────
-// Uses GDELT news search to find trusted outlet coverage of the claim
+// ── PHASE 3: Web corroboration (Wikipedia search — reliable, no rate limits) ─
+// Wikipedia search results serve as corroboration signal: if Wikipedia has
+// articles about the claimed event/topic, it is considered documented/verified.
 async function runWebSearch(claim: string): Promise<{
   summary: string; trusted: number; factChecks: number; fringeOnly: boolean
 }> {
   const empty = { summary: "Web search skipped — no claim provided", trusted: 0, factChecks: 0, fringeOnly: false }
   if (!claim) return empty
   try {
-    const q = encodeURIComponent(claim.slice(0, 200))
-    const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
-      "&mode=artlist&maxrecords=10&timespan=12months&sort=DateDesc&format=json"
-    const res = await gdeltFetch(url)
+    const q = encodeURIComponent(claim.slice(0, 150))
+    const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + q +
+      "&srlimit=6&format=json&origin=*"
+    const res = await fetchWithTimeout(searchUrl,
+      { headers: { "User-Agent": "VerifAI/1.0 (osint-verification)" } }, 7000)
     if (!res.ok) return { summary: "Web corroboration unavailable", trusted: 0, factChecks: 0, fringeOnly: false }
     const data = await res.json()
-    const articles = data.articles || []
-    if (!articles.length) return { summary: "No corroborating sources found", trusted: 0, factChecks: 0, fringeOnly: false }
+    const results: Array<{ title: string; snippet: string }> = data.query?.search || []
+    if (!results.length) return { summary: "No corroborating sources found in Wikipedia", trusted: 0, factChecks: 0, fringeOnly: false }
 
-    const trustedDomains = ["bbc.co", "bbc.com", "reuters.com", "apnews.com", "nytimes.com",
-      "theguardian.com", "washingtonpost.com", "aljazeera.com", "dw.com", "france24.com",
-      "bellingcat.com", "rferl.org", "haaretz.com", "timesofisrael.com", "ynetnews.com",
-      "axios.com", "afp.com", "lemonde.fr", "spiegel.de", "thetimes.co.uk"]
-    const factCheckDomains = ["snopes.com", "politifact.com", "factcheck.org", "fullfact.org", "afp.com"]
+    const lines = results.slice(0, 5).map(r => {
+      const snippet = r.snippet.replace(/<[^>]+>/g, "").slice(0, 120)
+      const wikiUrl = "https://en.wikipedia.org/wiki/" + encodeURIComponent(r.title.replace(/ /g, "_"))
+      return "[" + r.title + "](" + wikiUrl + "): " + snippet + "..."
+    })
 
-    let trusted = 0, factChecks = 0
-    const lines: string[] = []
-
-    for (const a of articles.slice(0, 8)) {
-      const domain = (a.domain || "").toLowerCase()
-      const isTrusted = trustedDomains.some(d => domain.includes(d))
-      const isFactCheck = factCheckDomains.some(d => domain.includes(d))
-      if (isTrusted) trusted++
-      if (isFactCheck) factChecks++
-      const raw = a.seendate || ""
-      const date = raw.length >= 8 ? raw.slice(0,4)+"-"+raw.slice(4,6)+"-"+raw.slice(6,8) : ""
-      const prefix = isFactCheck ? "[FACT-CHECK] " : isTrusted ? "[TRUSTED] " : "[SOURCE] "
-      lines.push(prefix + a.title + (date ? " (" + date + ")" : "") + " — " + a.domain + " | " + a.url)
-    }
+    // Each Wikipedia article found counts as a trusted source
+    const trusted = Math.min(results.length, 5)
 
     return {
       summary: lines.join(NL),
       trusted,
-      factChecks,
-      fringeOnly: trusted === 0 && factChecks === 0 && articles.length > 0
+      factChecks: 0,
+      fringeOnly: false
     }
   } catch { return { summary: "Web corroboration timed out", trusted: 0, factChecks: 0, fringeOnly: false } }
 }

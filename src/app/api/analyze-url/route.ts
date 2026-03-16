@@ -246,48 +246,36 @@ async function runNewsBriefing(query: string): Promise<{ summary: string; skippe
   }
 }
 
-// ── GDELT web search (same logic as analyze/route.ts) ──────────────────────
+// ── Web corroboration (Wikipedia search — reliable, no rate limits) ─────────
 async function runWebSearch(query: string): Promise<{
   summary: string; trusted: number; factChecks: number; fringeOnly: boolean
 }> {
   const empty = { summary: "Web search skipped — no query provided", trusted: 0, factChecks: 0, fringeOnly: false }
   if (!query) return empty
   try {
-    const q = encodeURIComponent(query.slice(0, 200))
-    const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
-      "&mode=artlist&maxrecords=10&timespan=2months&sort=DateDesc&format=json"
-    const res = await gdeltFetch(url)
+    const q = encodeURIComponent(query.slice(0, 150))
+    const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + q +
+      "&srlimit=6&format=json&origin=*"
+    const res = await fetchWithTimeout(searchUrl,
+      { headers: { "User-Agent": "VerifAI/1.0 (osint-verification)" } }, 7000)
     if (!res.ok) return { summary: "Web corroboration unavailable", trusted: 0, factChecks: 0, fringeOnly: false }
     const data = await res.json()
-    const articles = data.articles || []
-    if (!articles.length) return { summary: "No corroborating sources found", trusted: 0, factChecks: 0, fringeOnly: false }
+    const results: Array<{ title: string; snippet: string }> = data.query?.search || []
+    if (!results.length) return { summary: "No corroborating sources found in Wikipedia", trusted: 0, factChecks: 0, fringeOnly: false }
 
-    const trustedDomains = ["bbc.co", "bbc.com", "reuters.com", "apnews.com", "nytimes.com",
-      "theguardian.com", "washingtonpost.com", "aljazeera.com", "dw.com", "france24.com",
-      "bellingcat.com", "rferl.org", "haaretz.com", "timesofisrael.com", "ynetnews.com",
-      "axios.com", "afp.com", "lemonde.fr", "spiegel.de", "thetimes.co.uk"]
-    const factCheckDomains = ["snopes.com", "politifact.com", "factcheck.org", "fullfact.org", "afp.com"]
+    const lines = results.slice(0, 5).map(r => {
+      const snippet = r.snippet.replace(/<[^>]+>/g, "").slice(0, 120)
+      const wikiUrl = "https://en.wikipedia.org/wiki/" + encodeURIComponent(r.title.replace(/ /g, "_"))
+      return "[" + r.title + "](" + wikiUrl + "): " + snippet + "..."
+    })
 
-    let trusted = 0, factChecks = 0
-    const lines: string[] = []
-
-    for (const a of articles.slice(0, 8)) {
-      const domain = (a.domain || "").toLowerCase()
-      const isTrusted = trustedDomains.some(d => domain.includes(d))
-      const isFactCheck = factCheckDomains.some(d => domain.includes(d))
-      if (isTrusted) trusted++
-      if (isFactCheck) factChecks++
-      const raw = a.seendate || ""
-      const date = raw.length >= 8 ? raw.slice(0,4)+"-"+raw.slice(4,6)+"-"+raw.slice(6,8) : ""
-      const prefix = isFactCheck ? "[FACT-CHECK] " : isTrusted ? "[TRUSTED] " : "[SOURCE] "
-      lines.push(prefix + a.title + (date ? " (" + date + ")" : "") + " — " + a.domain + " | " + a.url)
-    }
+    const trusted = Math.min(results.length, 5)
 
     return {
       summary: lines.join(NL),
       trusted,
-      factChecks,
-      fringeOnly: trusted === 0 && factChecks === 0 && articles.length > 0
+      factChecks: 0,
+      fringeOnly: false
     }
   } catch { return { summary: "Web corroboration timed out", trusted: 0, factChecks: 0, fringeOnly: false } }
 }
