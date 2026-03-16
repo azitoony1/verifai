@@ -429,7 +429,7 @@ async function runReverseImageSearch(imageBase64: string): Promise<string> {
 function tightenWikiQuery(claim: string): string {
   const text = claim.slice(0, 150)
   const entityRx = /\b(Iran|Iraq|Israel|Palestine|Gaza|West Bank|Ukraine|Russia|Syria|Lebanon|Yemen|Sudan|Afghanistan|Pakistan|China|Taiwan|Kosovo|Libya|Somalia|Ethiopia|Myanmar|NATO|Hamas|Hezbollah|IDF|ISIS|ISIL|Houthi|Wagner|Taliban|Zelensky|Netanyahu|Putin|Khamenei|Kyiv|Kharkiv|Mariupol|Bakhmut|Rafah|Mosul|Raqqa|Aleppo|Kabul|Kherson)\b/gi
-  const matches = [...new Set((text.match(entityRx) || []).map(m => m.charAt(0).toUpperCase() + m.slice(1).toLowerCase()))]
+  const matches = Array.from(new Set((text.match(entityRx) || []).map(m => m.charAt(0).toUpperCase() + m.slice(1).toLowerCase())))
   if (!matches.length) return text
   // Require up to 2 most specific entities, keep full claim as context
   return matches.slice(0, 2).map(m => "+" + m).join(" ") + " " + text
