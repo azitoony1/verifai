@@ -99,7 +99,7 @@ async function runNewsBriefing(claim: string): Promise<NewsBriefing> {
     const items = await runGoogleNewsRSS(claim.slice(0, 100))
     if (!items.length) return EMPTY_BRIEFING
     const lines = items.slice(0, 6).map(a => "[recent] " + a.title + " — " + a.source)
-    const sources = items.map(a => a.url)
+    const sources = items.slice(0, 6).map(a => a.title + " — " + a.source)
     const parts = [
       "=== CURRENT NEWS CONTEXT (Google News) ===",
       "The following are recent news headlines retrieved " + TODAY + ". Use as contextual background.",
@@ -646,7 +646,7 @@ function assembleResult(
     flags.push({
       phase: "Current Intelligence", severity: "info" as Severity,
       title: "Live conflict news injected",
-      detail: briefing.sources.length + " recent Google News headlines used as background context for Gemini analysis."
+      detail: briefing.sources.join("\n")
     })
   }
 
