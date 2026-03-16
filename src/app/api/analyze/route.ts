@@ -112,14 +112,26 @@ async function runNewsBriefing(claim: string): Promise<NewsBriefing> {
 }
 
 // ── PHASE 0: Fact-check pre-check (Google News RSS) ───────────────────────
+const FC_STOPWORDS = new Set(["the","a","an","is","in","on","at","to","for","of","and","or","with","from","by","that","this","was","were","has","have","had","be","been","are","its","it","he","she","they","we"])
+
+function claimKeywords(text: string): Set<string> {
+  return new Set(text.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(w => w.length > 3 && !FC_STOPWORDS.has(w)))
+}
+
 async function runFactCheckPreCheck(claim: string): Promise<string> {
   if (!claim) return "skipped"
   try {
     const factCheckSites = ["snopes.com", "fullfact.org", "politifact.com", "factcheck.org"]
     const items = await runGoogleNewsRSS(claim.slice(0, 80) + " fact check")
-    const factChecks = items.filter(item =>
-      factCheckSites.some(d => (item.url || "").includes(d) || (item.source || "").toLowerCase().includes(d.split(".")[0]))
-    ).slice(0, 3)
+    const claimKws = claimKeywords(claim)
+    const factChecks = items.filter(item => {
+      const isFactChecker = factCheckSites.some(d => (item.url || "").includes(d) || (item.source || "").toLowerCase().includes(d.split(".")[0]))
+      if (!isFactChecker) return false
+      // Require at least 2 significant words from the claim to appear in the article title
+      const titleKws = claimKeywords(item.title)
+      const overlap = Array.from(titleKws).filter(w => claimKws.has(w)).length
+      return overlap >= 2
+    }).slice(0, 3)
     if (!factChecks.length) return "No existing fact-checks found"
     return factChecks.map(a => a.title + " — " + a.source + " | " + a.url).join(NL)
   } catch { return "Fact-check pre-check timed out" }
@@ -634,7 +646,7 @@ function assembleResult(
     flags.push({
       phase: "Current Intelligence", severity: "info" as Severity,
       title: "Live conflict news injected",
-      detail: "Real-time news context: " + briefing.sources.slice(0, 2).join(", ")
+      detail: briefing.sources.length + " recent Google News headlines used as background context for Gemini analysis."
     })
   }
 

@@ -77,18 +77,23 @@ const DOMAIN_NAMES: Record<string, string> = {
   "afp.com": "AFP", "lemonde.fr": "Le Monde",
 }
 
-function shortLabel(label: string, url: string): string {
-  const words = label.trim().split(/\s+/)
-  if (words.length <= 3) return label
+function domainLabel(url: string): string {
   try {
     const host = new URL(url).hostname.replace(/^www\./, "")
+    if (host === "news.google.com") return "article"
     for (const [domain, name] of Object.entries(DOMAIN_NAMES)) {
       if (host.includes(domain)) return name
     }
     return host
-  } catch {
-    return words.slice(0, 2).join(" ")
-  }
+  } catch { return "link" }
+}
+
+function shortLabel(label: string, url: string): string {
+  // Bare URL passed as label — always derive a short name from the domain
+  if (!label || label.startsWith("http")) return domainLabel(url)
+  const words = label.trim().split(/\s+/)
+  if (words.length <= 3) return label
+  return domainLabel(url)
 }
 
 // ── Render text with clickable URLs and [label](url) markdown links ───────
