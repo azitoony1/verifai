@@ -268,8 +268,11 @@ export async function exportToPDF(
       }
     })
 
+    // Render the section header first so y reflects post-header position,
+    // then size the image to fit whatever vertical space remains on this page.
+    sectionHeader("Submitted Image")
     const maxW = CW
-    const maxH = 110
+    const maxH = Math.max(30, Math.min(110, PH - 20 - y - 10))
     const ratio = imgDims.w / Math.max(imgDims.h, 1)
     let imgW: number, imgH: number
     if (ratio > maxW / maxH) {
@@ -281,8 +284,6 @@ export async function exportToPDF(
     imgH = Math.round(imgH)
     const imgX = ML + (CW - imgW) / 2
 
-    checkPage(imgH + 20)
-    sectionHeader("Submitted Image")
     try {
       doc.addImage(imageDataUrl, "JPEG", imgX, y, imgW, imgH, undefined, "MEDIUM")
       strokeRect(imgX, y, imgW, imgH, RULE)

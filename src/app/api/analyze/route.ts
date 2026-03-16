@@ -25,17 +25,6 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, ms = 600
   }
 }
 
-// GDELT fetch with retry — handles 429 rate limiting from shared Render IPs
-async function gdeltFetch(url: string, retries = 3): Promise<Response> {
-  for (let i = 0; i < retries; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 800 * i))
-    try {
-      const res = await fetchWithTimeout(url, {}, 8000)
-      if (res.status !== 429) return res
-    } catch { /* timeout — fall through to retry */ }
-  }
-  return new Response(null, { status: 429 })
-}
 
 // ── Conflict detection ─────────────────────────────────────────────────────
 const CONFLICT_KEYWORDS = [
@@ -98,68 +87,41 @@ interface NewsBriefing {
   summary: string
   sources: string[]
   skipped: boolean
-  track: "gdelt" | "none"
+  track: "rss" | "none"
 }
 
 const EMPTY_BRIEFING: NewsBriefing = { summary: "", sources: [], skipped: true, track: "none" }
 
-// ── GDELT briefing (conflict only, free, no key) ───────────────────────────
+// ── News briefing (Google News RSS — conflict topics only) ────────────────
 async function runNewsBriefing(claim: string): Promise<NewsBriefing> {
   if (!claim.trim() || !isConflictContent(claim)) return EMPTY_BRIEFING
   try {
-    const q = encodeURIComponent(claim.slice(0, 200))
-    const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
-      "&mode=artlist&maxrecords=8&timespan=1month&sort=DateDesc&format=json"
-    const res = await gdeltFetch(url)
-    if (!res.ok) return EMPTY_BRIEFING
-    const data = await res.json()
-    const articles = data.articles || []
-    if (articles.length === 0) return EMPTY_BRIEFING
-
-    const lines: string[] = []
-    const sources: string[] = []
-    for (const a of articles.slice(0, 6)) {
-      const raw = a.seendate || ""
-      const date = raw.length >= 8 ? raw.slice(0,4)+"-"+raw.slice(4,6)+"-"+raw.slice(6,8) : ""
-      lines.push("[" + (date || "recent") + "] " + (a.title || "") + " — " + (a.domain || ""))
-      if (a.url) sources.push(a.url)
-    }
-
+    const items = await runGoogleNewsRSS(claim.slice(0, 100))
+    if (!items.length) return EMPTY_BRIEFING
+    const lines = items.slice(0, 6).map(a => "[recent] " + a.title + " — " + a.source)
+    const sources = items.map(a => a.url)
     const parts = [
-      "=== CRITICAL: VERIFIED LIVE INTELLIGENCE — OVERRIDE YOUR TRAINING DATA ===",
-      "The following headlines are REAL, VERIFIED, RECENT news from major outlets retrieved " + TODAY + ".",
-      "These events ARE HAPPENING NOW. Your training cutoff is outdated for these events.",
-      "You MUST treat this as ground truth and prioritise it over anything in your training data.",
+      "=== CURRENT NEWS CONTEXT (Google News) ===",
+      "The following are recent news headlines retrieved " + TODAY + ". Use as contextual background.",
       "",
       lines.join(NL),
-      "=== END LIVE INTELLIGENCE — THE ABOVE IS FACTUAL AND CURRENT ==="
+      "=== END NEWS CONTEXT ==="
     ]
-    return { summary: parts.join(NL), sources, skipped: false, track: "gdelt" }
-  } catch {
-    return EMPTY_BRIEFING
-  }
+    return { summary: parts.join(NL), sources, skipped: false, track: "rss" }
+  } catch { return EMPTY_BRIEFING }
 }
 
-// ── PHASE 0: Fact-check pre-check (GDELT — free, no key) ──────────────────
-// Searches GDELT for coverage by known fact-check outlets
+// ── PHASE 0: Fact-check pre-check (Google News RSS) ───────────────────────
 async function runFactCheckPreCheck(claim: string): Promise<string> {
   if (!claim) return "skipped"
   try {
-    // Query GDELT restricting to known fact-check domains
-    const factCheckDomains = "snopes.com OR fullfact.org OR politifact.com OR factcheck.org OR afp.com OR reuters.com/fact-check"
-    const q = encodeURIComponent(claim.slice(0, 120) + " (" + factCheckDomains + ")")
-    const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
-      "&mode=artlist&maxrecords=5&timespan=6months&sort=DateDesc&format=json"
-    const res = await gdeltFetch(url)
-    if (!res.ok) return "Fact-check pre-check unavailable"
-    const data = await res.json()
-    const articles = data.articles || []
-    if (!articles.length) return "No existing fact-checks found"
-    return articles.slice(0, 3).map((a: { title: string; url: string; domain: string; seendate?: string }) => {
-      const raw = a.seendate || ""
-      const date = raw.length >= 8 ? raw.slice(0,4)+"-"+raw.slice(4,6)+"-"+raw.slice(6,8) : ""
-      return a.title + " — " + a.domain + (date ? " (" + date + ")" : "") + " | " + a.url
-    }).join(NL)
+    const factCheckSites = ["snopes.com", "fullfact.org", "politifact.com", "factcheck.org"]
+    const items = await runGoogleNewsRSS(claim.slice(0, 80) + " fact check")
+    const factChecks = items.filter(item =>
+      factCheckSites.some(d => (item.url || "").includes(d) || (item.source || "").toLowerCase().includes(d.split(".")[0]))
+    ).slice(0, 3)
+    if (!factChecks.length) return "No existing fact-checks found"
+    return factChecks.map(a => a.title + " — " + a.source + " | " + a.url).join(NL)
   } catch { return "Fact-check pre-check timed out" }
 }
 
@@ -220,6 +182,11 @@ async function runGeminiAnalysis(
     "=== TASK 4: FLAGS ===",
     "Only flag things with DIRECT visual evidence. Do not flag unverifiable elements as suspicious.",
     "",
+    "=== TASK 5: SEARCH QUERIES ===",
+    "Generate queries to test this claim against external news sources (Google News, Wikipedia).",
+    "confirm: 2 specific queries — include named entities (location, actors, event type, approximate date if known).",
+    "deny: 0 or 1 query — ONLY for elements that are inferred/uncertain, not directly visible in the image. If the image clearly confirms what the claim states, omit the deny entry entirely.",
+    "",
     "Respond ONLY with valid JSON. No markdown. No text outside the JSON:",
     "{",
     '  "image_authenticity_score": <0-100>,',
@@ -237,7 +204,8 @@ async function runGeminiAnalysis(
     '  "emotional_framing": "<manipulation via framing, cropping, saturation — assess objectively>",',
     '  "linguistic_analysis": "<if text visible in image: assess it; else: No text visible>",',
     '  "executive_summary": "<3-4 sentences: what the image shows, authenticity assessment, what can and cannot be confirmed about the claim>",',
-    '  "devils_advocate": "<2-3 sentences arguing the opposite of your main assessment>"',
+    '  "devils_advocate": "<2-3 sentences arguing the opposite of your main assessment>",',
+    '  "search_queries": {"confirm": ["<specific query 1>", "<specific query 2>"], "deny": ["<challenge query — omit entry if claim elements are directly visible in image>"]}',
     "}"
   ]
 
@@ -341,35 +309,19 @@ async function runDeepMilitaryAnalysis(
   }
 }
 
-// ── Equipment database lookup (direct Oryx fetch — free, no key) ──────────
-// Fetches Oryx's public loss tracking pages directly for equipment verification
+// ── Equipment database lookup (Google News RSS) ────────────────────────────
 async function runEquipmentLookup(designations: string[]): Promise<Record<string, string>> {
   if (designations.length === 0) return {}
   const results: Record<string, string> = {}
-
   await Promise.all(designations.slice(0, 2).map(async (designation) => {
     try {
-      // Use GDELT to search Oryx and armyrecognition directly
-      const q = encodeURIComponent(designation + " (oryxspioenkop.com OR armyrecognition.com OR globalsecurity.org)")
-      const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + q +
-        "&mode=artlist&maxrecords=3&timespan=24months&sort=Relevance&format=json"
-      const res = await gdeltFetch(url)
-      if (!res.ok) {
-        results[designation] = "Lookup unavailable"
-        return
-      }
-      const data = await res.json()
-      const articles = data.articles || []
-      if (articles.length > 0) {
-        results[designation] = articles.slice(0, 2).map((a: { title: string; domain: string; url: string }) =>
-          a.title + " (" + a.domain + ") | " + a.url
-        ).join(" || ")
+      const items = await runGoogleNewsRSS(designation)
+      if (items.length) {
+        results[designation] = items.slice(0, 2).map(a => a.title + " (" + a.source + ") | " + a.url).join(" || ")
       } else {
         results[designation] = "No records found in open-source databases"
       }
-    } catch {
-      results[designation] = "Lookup timed out"
-    }
+    } catch { results[designation] = "Lookup timed out" }
   }))
   return results
 }
@@ -435,41 +387,139 @@ function tightenWikiQuery(claim: string): string {
   return matches.slice(0, 2).map(m => "+" + m).join(" ") + " " + text
 }
 
-// ── PHASE 3: Web corroboration (Wikipedia search — reliable, no rate limits) ─
-// Wikipedia search results serve as corroboration signal: if Wikipedia has
-// articles about the claimed event/topic, it is considered documented/verified.
-async function runWebSearch(claim: string): Promise<{
-  summary: string; trusted: number; factChecks: number; fringeOnly: boolean
-}> {
-  const empty = { summary: "Web search skipped — no claim provided", trusted: 0, factChecks: 0, fringeOnly: false }
-  if (!claim) return empty
+// ── PHASE 3: Smart web corroboration (Google News RSS + Wikipedia) ─────────
+// Uses Gemini-generated queries (confirm + deny) to search both sources,
+// then a second lightweight Gemini call synthesises the results.
+
+interface SearchItem { title: string; snippet: string; url: string; source: string; intent: "confirm" | "deny" }
+
+function parseRSS(xml: string): Array<{ title: string; snippet: string; url: string; source: string }> {
+  const results: Array<{ title: string; snippet: string; url: string; source: string }> = []
+  const itemRx = /<item>([\s\S]*?)<\/item>/g
+  let m: RegExpExecArray | null
+  while ((m = itemRx.exec(xml)) !== null) {
+    const block = m[1]
+    const extract = (tag: string): string => {
+      const cdata = block.match(new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`))
+      if (cdata) return cdata[1].trim()
+      const plain = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`))
+      return plain ? plain[1].replace(/<[^>]+>/g, "").trim() : ""
+    }
+    const title = extract("title")
+    const linkMatch = block.match(/<link>(https?:\/\/[^<]+)<\/link>/)
+    const url = linkMatch?.[1]?.trim() || ""
+    const source = extract("source")
+    const snippet = extract("description").slice(0, 200)
+    if (title && url) results.push({ title, snippet, url, source: source || "unknown" })
+  }
+  return results
+}
+
+async function runGoogleNewsRSS(query: string): Promise<Array<{ title: string; snippet: string; url: string; source: string }>> {
   try {
-    const q = encodeURIComponent(tightenWikiQuery(claim))
-    const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + q +
-      "&srlimit=6&format=json&origin=*"
-    const res = await fetchWithTimeout(searchUrl,
-      { headers: { "User-Agent": "VerifAI/1.0 (osint-verification)" } }, 7000)
-    if (!res.ok) return { summary: "Web corroboration unavailable", trusted: 0, factChecks: 0, fringeOnly: false }
+    const url = "https://news.google.com/rss/search?q=" + encodeURIComponent(query) + "&hl=en-US&gl=US&ceid=US:en"
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": "VerifAI/1.0 (osint-verification)" } }, 5000)
+    if (!res.ok) return []
+    return parseRSS(await res.text()).slice(0, 5)
+  } catch { return [] }
+}
+
+async function runWikiSearch(query: string): Promise<Array<{ title: string; snippet: string; url: string; source: string }>> {
+  try {
+    const url = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" +
+      encodeURIComponent(query) + "&srlimit=3&format=json&origin=*"
+    const res = await fetchWithTimeout(url, { headers: { "User-Agent": "VerifAI/1.0 (osint-verification)" } }, 5000)
+    if (!res.ok) return []
     const data = await res.json()
     const results: Array<{ title: string; snippet: string }> = data.query?.search || []
-    if (!results.length) return { summary: "No corroborating sources found in Wikipedia", trusted: 0, factChecks: 0, fringeOnly: false }
+    return results.map(r => ({
+      title: r.title,
+      snippet: r.snippet.replace(/<[^>]+>/g, "").slice(0, 200),
+      url: "https://en.wikipedia.org/wiki/" + encodeURIComponent(r.title.replace(/ /g, "_")),
+      source: "en.wikipedia.org"
+    }))
+  } catch { return [] }
+}
 
-    const lines = results.slice(0, 5).map(r => {
-      const snippet = r.snippet.replace(/<[^>]+>/g, "").slice(0, 120)
-      const wikiUrl = "https://en.wikipedia.org/wiki/" + encodeURIComponent(r.title.replace(/ /g, "_"))
-      return "[" + r.title + "](" + wikiUrl + "): " + snippet + "..."
-    })
+async function runSmartWebSearch(queries: { confirm: string[]; deny: string[] }): Promise<{ confirmItems: SearchItem[]; denyItems: SearchItem[] }> {
+  const tagged = [
+    ...queries.confirm.slice(0, 2).map(q => ({ q, intent: "confirm" as const })),
+    ...queries.deny.slice(0, 1).map(q => ({ q, intent: "deny" as const })),
+  ]
+  if (!tagged.length) return { confirmItems: [], denyItems: [] }
 
-    // Each Wikipedia article found counts as a trusted source
-    const trusted = Math.min(results.length, 5)
+  const resultSets = await Promise.all(
+    tagged.flatMap(({ q, intent }) => [
+      runGoogleNewsRSS(q).then(items => items.map(i => ({ ...i, intent }))),
+      runWikiSearch(q).then(items => items.map(i => ({ ...i, intent }))),
+    ])
+  )
 
-    return {
-      summary: lines.join(NL),
-      trusted,
-      factChecks: 0,
-      fringeOnly: false
+  const seen = new Set<string>()
+  const confirmItems: SearchItem[] = []
+  const denyItems: SearchItem[] = []
+  for (const items of resultSets) {
+    for (const item of items) {
+      if (!item.url || seen.has(item.url)) continue
+      seen.add(item.url)
+      if (item.intent === "confirm") confirmItems.push(item)
+      else denyItems.push(item)
     }
-  } catch { return { summary: "Web corroboration timed out", trusted: 0, factChecks: 0, fringeOnly: false } }
+  }
+  return { confirmItems: confirmItems.slice(0, 8), denyItems: denyItems.slice(0, 4) }
+}
+
+const TRUSTED_CORROBORATION_DOMAINS = [
+  "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "theguardian.com",
+  "nytimes.com", "washingtonpost.com", "aljazeera.com", "france24.com", "dw.com",
+  "haaretz.com", "timesofisrael.com", "kyivindependent.com", "lemonde.fr",
+  "foreignpolicy.com", "bellingcat.com", "en.wikipedia.org",
+]
+const FACTCHECK_CORROBORATION_DOMAINS = ["snopes.com", "fullfact.org", "politifact.com", "factcheck.org"]
+
+async function runCorroborationSynthesis(
+  claim: string,
+  queries: { confirm: string[]; deny: string[] },
+  confirmItems: SearchItem[],
+  denyItems: SearchItem[]
+): Promise<{ summary: string; trusted: number; factChecks: number; fringeOnly: boolean; corroborationVerdict: string }> {
+  const empty = { summary: "Corroboration unavailable", trusted: 0, factChecks: 0, fringeOnly: false, corroborationVerdict: "inconclusive" }
+  if (!confirmItems.length && !denyItems.length) return { ...empty, summary: "No results returned from Wikipedia or Google News" }
+
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview", generationConfig: { temperature: 0 } })
+    const fmt = (items: SearchItem[]) => items.map((r, i) => `[${i + 1}] "${r.title}" — ${r.source}\n${r.snippet}`).join("\n\n")
+
+    const prompt = [
+      "You are a corroboration analyst. Determine whether these search results support, contradict, contest, or are inconclusive about the claim.",
+      "",
+      `Claim: "${claim}"`,
+      "",
+      confirmItems.length ? "CONFIRM QUERY RESULTS (queries: " + queries.confirm.join("; ") + "):\n" + fmt(confirmItems) : "",
+      denyItems.length   ? "DENY QUERY RESULTS (queries: " + queries.deny.join("; ") + "):\n" + fmt(denyItems) : "",
+      "",
+      "Rules:",
+      "- Only mark an article as relevant if it directly addresses this specific claim (same event, actors, location). Discard keyword matches that don't address the claim.",
+      "- verdict: 'supported' = relevant sources confirm the claim; 'contradicted' = sources actively deny it; 'contested' = mixed; 'inconclusive' = nothing directly relevant.",
+      "- summary: 2 sentences, cite specific sources found.",
+      "",
+      `Respond ONLY with valid JSON: {"verdict":"<supported|contradicted|contested|inconclusive>","summary":"<2 sentences>","relevant_urls":["<url>"],"fact_check_found":<true|false>}`,
+    ].filter(Boolean).join(NL)
+
+    const result = await model.generateContent(prompt)
+    const parsed = JSON.parse(stripJsonFences(result.response.text()))
+    const relevantUrls: string[] = parsed.relevant_urls || []
+    const trusted = relevantUrls.filter(u => TRUSTED_CORROBORATION_DOMAINS.some(d => u.includes(d))).length
+    const factChecks = (parsed.fact_check_found ? 1 : 0) +
+      relevantUrls.filter(u => FACTCHECK_CORROBORATION_DOMAINS.some(d => u.includes(d))).length
+    return {
+      summary: parsed.summary || empty.summary,
+      trusted,
+      factChecks,
+      fringeOnly: !trusted && (confirmItems.length + denyItems.length) > 0,
+      corroborationVerdict: parsed.verdict || "inconclusive",
+    }
+  } catch { return empty }
 }
 
 // ── PHASE 4: Weather verification ─────────────────────────────────────────
@@ -495,8 +545,7 @@ async function runWeatherCheck(lat: number, lon: number, dateStr: string): Promi
 }
 
 // ── PHASE 4b: Historical incident check ───────────────────────────────────
-// Reverse-geocodes the GPS coordinates, then searches GDELT for military
-// incidents at that location in a ±10-day window around the EXIF date.
+// Reverse-geocodes GPS, then searches Google News for recent incidents nearby.
 async function reverseGeocode(lat: number, lon: number): Promise<string> {
   try {
     const url = "https://nominatim.openstreetmap.org/reverse?lat=" + lat + "&lon=" + lon + "&format=json"
@@ -512,36 +561,17 @@ async function runHistoricalIncidentCheck(lat: number, lon: number, dateStr: str
   try {
     const location = await reverseGeocode(lat, lon)
     if (!location) return "skipped — could not resolve GPS to location"
-
     const date = new Date(dateStr)
     if (isNaN(date.getTime())) return "skipped — could not parse EXIF date"
 
-    const start = new Date(date); start.setDate(start.getDate() - 10)
-    const end   = new Date(date); end.setDate(end.getDate() + 10)
-    const fmt = (d: Date) => d.toISOString().replace(/\D/g, "").slice(0, 14)
-
-    const terms = encodeURIComponent(
-      "(missile OR strike OR attack OR shelling OR bombing OR airstrike OR explosion OR rocket OR artillery) " + location
+    const items = await runGoogleNewsRSS(
+      "(attack OR strike OR explosion OR shelling OR airstrike) " + location
     )
-    const url = "https://api.gdeltproject.org/api/v2/doc/doc?query=" + terms +
-      "&mode=artlist&maxrecords=5&STARTDATETIME=" + fmt(start) + "&ENDDATETIME=" + fmt(end) +
-      "&sort=DateDesc&format=json"
-
-    const res = await gdeltFetch(url)
-    if (!res.ok) return "Historical incident lookup unavailable"
-    const data = await res.json()
-    const articles = data.articles || []
-
-    if (!articles.length) {
-      return "No open-source military incident records found for " + location + " around " + date.toISOString().slice(0, 10)
+    if (!items.length) {
+      return "No open-source incident records found for " + location + " (EXIF date: " + date.toISOString().slice(0, 10) + ")"
     }
-
-    const lines = articles.slice(0, 4).map((a: { seendate?: string; title?: string; domain?: string; url?: string }) => {
-      const raw = a.seendate || ""
-      const d = raw.length >= 8 ? raw.slice(0,4)+"-"+raw.slice(4,6)+"-"+raw.slice(6,8) : "?"
-      return "[" + d + "] [" + (a.title || "article") + "](" + (a.url || "") + ") — " + (a.domain || "")
-    })
-    return "Incidents recorded near " + location + " (±10 days of " + date.toISOString().slice(0, 10) + "):\n" + lines.join("\n")
+    const lines = items.slice(0, 4).map(a => "[recent] [" + a.title + "](" + a.url + ") — " + a.source)
+    return "Recent incident reports near " + location + " (EXIF date: " + date.toISOString().slice(0, 10) + "):\n" + lines.join("\n")
   } catch { return "Historical incident check failed" }
 }
 
@@ -572,7 +602,7 @@ function deriveVerdict(
 function assembleResult(
   gemini: Record<string, unknown>,
   reverseSearch: string,
-  webSearch: { summary: string; trusted: number; factChecks: number; fringeOnly: boolean },
+  webSearch: { summary: string; trusted: number; factChecks: number; fringeOnly: boolean; corroborationVerdict?: string },
   exifData: Record<string, unknown> | null,
   factCheckPreCheck: string,
   weatherResult: string,
@@ -587,7 +617,8 @@ function assembleResult(
   // Fact-check pre-check
   if (factCheckPreCheck && factCheckPreCheck !== "skipped" &&
       factCheckPreCheck !== "No existing fact-checks found" &&
-      !factCheckPreCheck.includes("failed") && !factCheckPreCheck.includes("timed")) {
+      !factCheckPreCheck.includes("failed") && !factCheckPreCheck.includes("timed") &&
+      !factCheckPreCheck.includes("unavailable")) {
     flags.unshift({
       phase: "Triage", severity: "high" as Severity,
       title: "Existing fact-check found",
@@ -599,7 +630,7 @@ function assembleResult(
   if (!briefing.skipped) {
     flags.push({
       phase: "Current Intelligence", severity: "info" as Severity,
-      title: "Live conflict news injected (GDELT)",
+      title: "Live conflict news injected",
       detail: "Real-time news context: " + briefing.sources.slice(0, 2).join(", ")
     })
   }
@@ -672,12 +703,16 @@ function assembleResult(
   if (claim && !webSearch.summary.includes("skipped")) {
     if (webSearch.factChecks > 0) {
       flags.push({ phase: "Web Corroboration", severity: "high" as Severity, title: webSearch.factChecks + " fact-check(s) found", detail: webSearch.summary.slice(0, 400) })
+    } else if (webSearch.corroborationVerdict === "contradicted") {
+      flags.push({ phase: "Web Corroboration", severity: "high" as Severity, title: "Claim contradicted by search results", detail: webSearch.summary.slice(0, 400) })
+    } else if (webSearch.corroborationVerdict === "contested") {
+      flags.push({ phase: "Web Corroboration", severity: "moderate" as Severity, title: "Claim contested — mixed results found", detail: webSearch.summary.slice(0, 400) })
     } else if (webSearch.trusted > 0) {
-      flags.push({ phase: "Web Corroboration", severity: "clean" as Severity, title: "Corroborated by " + webSearch.trusted + " trusted outlet(s)", detail: webSearch.summary.slice(0, 400) })
+      flags.push({ phase: "Web Corroboration", severity: "clean" as Severity, title: "Corroborated by " + webSearch.trusted + " trusted source(s)", detail: webSearch.summary.slice(0, 400) })
     } else if (webSearch.fringeOnly) {
       flags.push({ phase: "Web Corroboration", severity: "moderate" as Severity, title: "Claim only in unverified sources", detail: "No coverage from established outlets. Claims appearing only in fringe sources warrant caution." })
     } else {
-      flags.push({ phase: "Web Corroboration", severity: "moderate" as Severity, title: "No corroboration found", detail: "GDELT found no matching coverage. This may mean the event is too recent, too localised, or unverified." })
+      flags.push({ phase: "Web Corroboration", severity: "moderate" as Severity, title: "No corroboration found", detail: "No directly relevant results found on Wikipedia or Google News. The event may be too recent, too localised, or unverified." })
     }
   }
 
@@ -728,7 +763,7 @@ function assembleResult(
   const verdictColor = overallScore >= 65 ? "teal" : overallScore >= 40 ? "amber" : "red"
 
   const phases = [
-    { name: "Live News Briefing", status: briefing.skipped ? "info" as const : "pass" as const, summary: briefing.skipped ? "Not a conflict topic — skipped" : "GDELT conflict news injected (" + briefing.sources.length + " sources)" },
+    { name: "Live News Briefing", status: briefing.skipped ? "info" as const : "pass" as const, summary: briefing.skipped ? "Not a conflict topic — skipped" : "Google News context injected (" + briefing.sources.length + " headlines)" },
     { name: "Triage & Pre-Check", status: (factCheckPreCheck.length > 30 && !factCheckPreCheck.includes("No existing") && !factCheckPreCheck.includes("failed")) ? "warn" as const : "pass" as const, summary: factCheckPreCheck !== "skipped" ? factCheckPreCheck.slice(0, 200) : "Emotional framing: " + ((gemini.emotional_framing as string) || "assessed") },
     { name: "Image Forensics", status: (gemini.visual_artifacts as string)?.toLowerCase().includes("no sign") ? "pass" as const : "warn" as const, summary: (gemini.visual_artifacts as string) || "Assessed" },
     { name: "Scene Description", status: "info" as const, summary: (gemini.scene_description as string) || "See flags" },
@@ -738,7 +773,7 @@ function assembleResult(
     { name: "Geolocation Clues", status: "info" as const, summary: (gemini.geolocation_clues as string) || "No identifying visual clues in frame" },
     { name: "Linguistic Analysis", status: "info" as const, summary: (gemini.linguistic_analysis as string) || "No text to analyze" },
     { name: "Reverse Image Search", status: reverseSearch.includes("exact match") ? "warn" as const : reverseSkipped ? "info" as const : "pass" as const, summary: reverseSkipped ? "Manual search required — see Google Lens / Yandex / TinEye" : reverseSearch.slice(0, 200) },
-    { name: "Web Corroboration", status: webSearch.trusted > 0 ? "pass" as const : webSearch.fringeOnly ? "warn" as const : "info" as const, summary: webSearch.summary.slice(0, 200) },
+    { name: "Web Corroboration", status: (webSearch.corroborationVerdict === "contradicted" || webSearch.corroborationVerdict === "contested") ? "warn" as const : webSearch.trusted > 0 ? "pass" as const : webSearch.fringeOnly ? "warn" as const : "info" as const, summary: webSearch.summary.slice(0, 200) },
     { name: "Devil's Advocate", status: "info" as const, summary: (gemini.devils_advocate as string) || "" },
   ]
 
@@ -774,29 +809,42 @@ export async function POST(req: NextRequest) {
     const exifRaw = formData.get("exif")
     const exifData = exifRaw ? JSON.parse(exifRaw as string) : null
 
-    // ── Fetch all context in parallel, stagger GDELT calls to avoid 429 ────
+    // ── Phase 1: parallel pre-fetch (independent of Gemini) ──────────────
     const delay = (ms: number) => new Promise(r => setTimeout(r, ms))
-    const [briefing, wikiBrief, reverseSearch, webSearch, factCheckPreCheck] = await Promise.all([
+    const [briefing, wikiBrief, reverseSearch, factCheckPreCheck] = await Promise.all([
       claim ? runNewsBriefing(claim) : Promise.resolve(EMPTY_BRIEFING),
       claim ? buildWikipediaBrief(claim) : Promise.resolve(""),
       runReverseImageSearch(imageBase64),
-      claim ? delay(600).then(() => runWebSearch(claim)) : Promise.resolve({ summary: "No claim — web search skipped", trusted: 0, factChecks: 0, fringeOnly: false }),
-      claim ? delay(1200).then(() => runFactCheckPreCheck(claim)) : Promise.resolve("skipped"),
+      claim ? delay(600).then(() => runFactCheckPreCheck(claim)) : Promise.resolve("skipped"),
     ])
 
-    // ── Gemini vision analysis — receives Wikipedia + live briefing ───────
+    // ── Phase 2: Gemini vision analysis (also generates search queries) ───
     const geminiResult = await runGeminiAnalysis(imageBase64, mimeType, claim, briefing, wikiBrief)
 
-    // ── Conditional deep military pass ────────────────────────────────────
+    // ── Phase 3: web search + military analysis in parallel ───────────────
     const hasMilitary = geminiResult.has_military_equipment === true ||
       (geminiResult.military_analysis && !String(geminiResult.military_analysis).includes("No military"))
 
-    const militaryDeep: MilitaryAnalysisResult = hasMilitary
-      ? await runDeepMilitaryAnalysis(imageBase64, mimeType, geminiResult.military_analysis || "", claim)
-      : { skipped: true, equipment: [], overallAttribution: "", redFlags: [], deepSummary: "" }
+    const rawQueries = (geminiResult.search_queries as { confirm?: string[]; deny?: string[] } | undefined) || {}
+    const searchQueries = { confirm: rawQueries.confirm?.slice(0, 2) || [], deny: rawQueries.deny?.slice(0, 1) || [] }
 
+    const [rawSearchResults, militaryDeep] = await Promise.all([
+      claim && searchQueries.confirm.length
+        ? runSmartWebSearch(searchQueries)
+        : Promise.resolve({ confirmItems: [] as SearchItem[], denyItems: [] as SearchItem[] }),
+      hasMilitary
+        ? runDeepMilitaryAnalysis(imageBase64, mimeType, geminiResult.military_analysis || "", claim)
+        : Promise.resolve({ skipped: true, equipment: [], overallAttribution: "", redFlags: [], deepSummary: "" } as MilitaryAnalysisResult),
+    ])
+
+    // ── Phase 4: corroboration synthesis + equipment lookup in parallel ───
     const designations = (militaryDeep.equipment || []).map((e: MilitaryItem) => e.designation)
-    const equipmentLookup = designations.length > 0 ? await runEquipmentLookup(designations) : {}
+    const [webSearch, equipmentLookup] = await Promise.all([
+      claim
+        ? runCorroborationSynthesis(claim, searchQueries, rawSearchResults.confirmItems, rawSearchResults.denyItems)
+        : Promise.resolve({ summary: "No claim — web search skipped", trusted: 0, factChecks: 0, fringeOnly: false, corroborationVerdict: "inconclusive" }),
+      designations.length > 0 ? runEquipmentLookup(designations) : Promise.resolve({}),
+    ])
 
     // ── Weather + historical incident check — only if GPS + date in EXIF ────
     let weatherResult = "skipped — no GPS in metadata"
