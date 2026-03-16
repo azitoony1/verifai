@@ -60,7 +60,7 @@ async function buildWikipediaBrief(query: string): Promise<string> {
   if (!query.trim() || !isConflictContent(query)) return ""
   try {
     const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" +
-      encodeURIComponent(query.slice(0, 150)) + "&srlimit=3&format=json&origin=*"
+      encodeURIComponent(tightenWikiQuery(query)) + "&srlimit=3&format=json&origin=*"
     const searchRes = await fetchWithTimeout(searchUrl,
       { headers: { "User-Agent": "VerifAI/1.0 (osint-verification; contact: research)" } }, 6000)
     if (!searchRes.ok) return ""
@@ -375,6 +375,9 @@ async function runEquipmentLookup(designations: string[]): Promise<Record<string
 }
 
 // ── PHASE 2: Reverse image search ─────────────────────────────────────────
+// Only reports exact full-image matches. Partial/visually-similar matches
+// are too noisy (e.g. reporting "car" images when any vehicle is present)
+// and are deliberately ignored.
 async function runReverseImageSearch(imageBase64: string): Promise<string> {
   const apiKey = process.env.GOOGLE_VISION_API_KEY
   if (!apiKey) return "Reverse image search skipped — API key not configured"
@@ -393,29 +396,22 @@ async function runReverseImageSearch(imageBase64: string): Promise<string> {
       return "Vision API error: " + (errData?.error?.message || "HTTP " + res.status)
     }
     const data = await res.json()
-    // Check for API-level error in response body
     const apiError = data.responses?.[0]?.error
     if (apiError) return "Vision API error: " + apiError.message
     const web = data.responses?.[0]?.webDetection
-    // Empty or missing webDetection = no indexed matches
     if (!web || Object.keys(web).length === 0)
-      return "No prior web appearances — not indexed on the open web"
+      return "No precise match found — this image does not appear to have been published elsewhere online."
+
     const exactCount = web.fullMatchingImages?.length || 0
-    const partialCount = web.partialMatchingImages?.length || 0
     const pages: Array<{ url: string; pageTitle?: string }> = web.pagesWithMatchingImages || []
 
-    // No matches at all — image has not been found elsewhere
-    if (!exactCount && !partialCount) {
-      return "No prior web appearances found — this image does not appear to have been used elsewhere online."
+    // Only report if the exact image was found elsewhere
+    if (!exactCount) {
+      return "No precise match found — this image does not appear to have been published elsewhere online."
     }
 
-    // Build match summary
-    const matchParts: string[] = []
-    if (exactCount) matchParts.push(exactCount + " exact match" + (exactCount > 1 ? "es" : ""))
-    if (partialCount) matchParts.push(partialCount + " partial/similar match" + (partialCount > 1 ? "es" : ""))
-    let result = matchParts.join(" and ") + " found — this image has been used before."
+    let result = exactCount + " exact match" + (exactCount > 1 ? "es" : "") + " found — this image has been published online before."
 
-    // Show the articles it appeared in (with titles as links)
     if (pages.length > 0) {
       const links = pages.slice(0, 5).map((p, i) =>
         "[" + (p.pageTitle || "article " + (i + 1)) + "](" + p.url + ")"
@@ -427,6 +423,18 @@ async function runReverseImageSearch(imageBase64: string): Promise<string> {
   } catch { return "Reverse image search timed out or failed" }
 }
 
+// ── Wikipedia query tightener ──────────────────────────────────────────────
+// Extracts specific named entities from the claim and requires them (with +)
+// so a claim about "Iran" doesn't return "Gaza" articles, etc.
+function tightenWikiQuery(claim: string): string {
+  const text = claim.slice(0, 150)
+  const entityRx = /\b(Iran|Iraq|Israel|Palestine|Gaza|West Bank|Ukraine|Russia|Syria|Lebanon|Yemen|Sudan|Afghanistan|Pakistan|China|Taiwan|Kosovo|Libya|Somalia|Ethiopia|Myanmar|NATO|Hamas|Hezbollah|IDF|ISIS|ISIL|Houthi|Wagner|Taliban|Zelensky|Netanyahu|Putin|Khamenei|Kyiv|Kharkiv|Mariupol|Bakhmut|Rafah|Mosul|Raqqa|Aleppo|Kabul|Kherson)\b/gi
+  const matches = [...new Set((text.match(entityRx) || []).map(m => m.charAt(0).toUpperCase() + m.slice(1).toLowerCase()))]
+  if (!matches.length) return text
+  // Require up to 2 most specific entities, keep full claim as context
+  return matches.slice(0, 2).map(m => "+" + m).join(" ") + " " + text
+}
+
 // ── PHASE 3: Web corroboration (Wikipedia search — reliable, no rate limits) ─
 // Wikipedia search results serve as corroboration signal: if Wikipedia has
 // articles about the claimed event/topic, it is considered documented/verified.
@@ -436,7 +444,7 @@ async function runWebSearch(claim: string): Promise<{
   const empty = { summary: "Web search skipped — no claim provided", trusted: 0, factChecks: 0, fringeOnly: false }
   if (!claim) return empty
   try {
-    const q = encodeURIComponent(claim.slice(0, 150))
+    const q = encodeURIComponent(tightenWikiQuery(claim))
     const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + q +
       "&srlimit=6&format=json&origin=*"
     const res = await fetchWithTimeout(searchUrl,

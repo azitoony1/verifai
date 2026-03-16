@@ -182,7 +182,7 @@ async function buildWikipediaBrief(query: string): Promise<string> {
   if (!query.trim() || !isConflictContent(query)) return ""
   try {
     const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" +
-      encodeURIComponent(query.slice(0, 150)) + "&srlimit=3&format=json&origin=*"
+      encodeURIComponent(tightenWikiQuery(query)) + "&srlimit=3&format=json&origin=*"
     const searchRes = await fetchWithTimeout(searchUrl,
       { headers: { "User-Agent": "VerifAI/1.0 (osint-verification; contact: research)" } }, 6000)
     if (!searchRes.ok) return ""
@@ -246,6 +246,15 @@ async function runNewsBriefing(query: string): Promise<{ summary: string; skippe
   }
 }
 
+// ── Wikipedia query tightener ──────────────────────────────────────────────
+function tightenWikiQuery(claim: string): string {
+  const text = claim.slice(0, 150)
+  const entityRx = /\b(Iran|Iraq|Israel|Palestine|Gaza|West Bank|Ukraine|Russia|Syria|Lebanon|Yemen|Sudan|Afghanistan|Pakistan|China|Taiwan|Kosovo|Libya|Somalia|Ethiopia|Myanmar|NATO|Hamas|Hezbollah|IDF|ISIS|ISIL|Houthi|Wagner|Taliban|Zelensky|Netanyahu|Putin|Khamenei|Kyiv|Kharkiv|Mariupol|Bakhmut|Rafah|Mosul|Raqqa|Aleppo|Kabul|Kherson)\b/gi
+  const matches = [...new Set((text.match(entityRx) || []).map(m => m.charAt(0).toUpperCase() + m.slice(1).toLowerCase()))]
+  if (!matches.length) return text
+  return matches.slice(0, 2).map(m => "+" + m).join(" ") + " " + text
+}
+
 // ── Web corroboration (Wikipedia search — reliable, no rate limits) ─────────
 async function runWebSearch(query: string): Promise<{
   summary: string; trusted: number; factChecks: number; fringeOnly: boolean
@@ -253,7 +262,7 @@ async function runWebSearch(query: string): Promise<{
   const empty = { summary: "Web search skipped — no query provided", trusted: 0, factChecks: 0, fringeOnly: false }
   if (!query) return empty
   try {
-    const q = encodeURIComponent(query.slice(0, 150))
+    const q = encodeURIComponent(tightenWikiQuery(query))
     const searchUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" + q +
       "&srlimit=6&format=json&origin=*"
     const res = await fetchWithTimeout(searchUrl,
