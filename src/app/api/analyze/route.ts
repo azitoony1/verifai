@@ -473,7 +473,7 @@ const TRUSTED_CORROBORATION_DOMAINS = [
   "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "theguardian.com",
   "nytimes.com", "washingtonpost.com", "aljazeera.com", "france24.com", "dw.com",
   "haaretz.com", "timesofisrael.com", "kyivindependent.com", "lemonde.fr",
-  "foreignpolicy.com", "bellingcat.com", "en.wikipedia.org",
+  "foreignpolicy.com", "bellingcat.com",
 ]
 const FACTCHECK_CORROBORATION_DOMAINS = ["snopes.com", "fullfact.org", "politifact.com", "factcheck.org"]
 
@@ -491,19 +491,22 @@ async function runCorroborationSynthesis(
     const fmt = (items: SearchItem[]) => items.map((r, i) => `[${i + 1}] "${r.title}" — ${r.source}\n${r.snippet}`).join("\n\n")
 
     const prompt = [
-      "You are a corroboration analyst. Determine whether these search results support, contradict, contest, or are inconclusive about the claim.",
+      "You are a strict corroboration analyst. Your job is to determine whether these search results specifically corroborate or contradict the claim.",
       "",
       `Claim: "${claim}"`,
       "",
-      confirmItems.length ? "CONFIRM QUERY RESULTS (queries: " + queries.confirm.join("; ") + "):\n" + fmt(confirmItems) : "",
-      denyItems.length   ? "DENY QUERY RESULTS (queries: " + queries.deny.join("; ") + "):\n" + fmt(denyItems) : "",
+      confirmItems.length ? "CONFIRM QUERY RESULTS:\n" + fmt(confirmItems) : "",
+      denyItems.length   ? "DENY QUERY RESULTS:\n" + fmt(denyItems) : "",
       "",
-      "Rules:",
-      "- Only mark an article as relevant if it directly addresses this specific claim (same event, actors, location). Discard keyword matches that don't address the claim.",
-      "- verdict: 'supported' = relevant sources confirm the claim; 'contradicted' = sources actively deny it; 'contested' = mixed; 'inconclusive' = nothing directly relevant.",
-      "- summary: 2 sentences, cite specific sources found.",
+      "STRICT RELEVANCE RULES — apply these in order:",
+      "1. An article is ONLY relevant if it describes the SAME specific event as the claim: same approximate time period, same location, same actors.",
+      "2. These are NOT relevant: Wikipedia background articles about a country or conflict, general regional news, articles about different incidents, historical context pieces.",
+      "3. If you are not sure whether an article is about the same event, mark it as NOT relevant.",
+      "4. Default to 'inconclusive' unless you find at least one article that clearly describes this specific event.",
+      "5. verdict: 'supported' = 1+ relevant articles confirm the claim; 'contradicted' = relevant articles actively deny it; 'contested' = relevant articles conflict; 'inconclusive' = no directly relevant results.",
+      "6. summary: 2 sentences. If inconclusive, say so plainly — do not invent connections.",
       "",
-      `Respond ONLY with valid JSON: {"verdict":"<supported|contradicted|contested|inconclusive>","summary":"<2 sentences>","relevant_urls":["<url>"],"fact_check_found":<true|false>}`,
+      `Respond ONLY with valid JSON: {"verdict":"<supported|contradicted|contested|inconclusive>","summary":"<2 sentences>","relevant_urls":["<url of actually relevant article only>"],"fact_check_found":<true|false>}`,
     ].filter(Boolean).join(NL)
 
     const result = await model.generateContent(prompt)

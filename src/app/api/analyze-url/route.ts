@@ -286,7 +286,7 @@ const TRUSTED_CORROBORATION_DOMAINS = [
   "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "theguardian.com",
   "nytimes.com", "washingtonpost.com", "aljazeera.com", "france24.com", "dw.com",
   "haaretz.com", "timesofisrael.com", "kyivindependent.com", "lemonde.fr",
-  "foreignpolicy.com", "bellingcat.com", "en.wikipedia.org",
+  "foreignpolicy.com", "bellingcat.com",
 ]
 const FACTCHECK_CORROBORATION_DOMAINS = ["snopes.com", "fullfact.org", "politifact.com", "factcheck.org"]
 
@@ -309,10 +309,15 @@ async function runCorroborationSynthesis(
       confirmItems.length ? "CONFIRM QUERY RESULTS (queries: " + queries.confirm.join("; ") + "):\n" + fmt(confirmItems) : "",
       denyItems.length   ? "DENY QUERY RESULTS (queries: " + queries.deny.join("; ") + "):\n" + fmt(denyItems) : "",
       "",
-      "Rules: only count an article as relevant if it directly addresses this specific claim. Discard keyword matches that don't address the claim.",
-      "verdict: 'supported' = relevant sources confirm; 'contradicted' = sources actively deny; 'contested' = mixed; 'inconclusive' = nothing directly relevant.",
+      "STRICT RELEVANCE RULES:",
+      "1. An article is ONLY relevant if it describes the SAME specific event: same approximate time, same location, same actors.",
+      "2. NOT relevant: Wikipedia background articles, general regional news, articles about different incidents, historical context.",
+      "3. If unsure whether an article is about the same event, mark it NOT relevant.",
+      "4. Default to 'inconclusive' unless you find at least one article clearly about this specific event.",
+      "5. verdict: 'supported'=1+ articles confirm; 'contradicted'=articles deny; 'contested'=conflict; 'inconclusive'=nothing directly relevant.",
+      "6. If inconclusive, say so plainly in the summary — do not invent connections.",
       "",
-      `Respond ONLY with valid JSON: {"verdict":"<supported|contradicted|contested|inconclusive>","summary":"<2 sentences citing specific sources>","relevant_urls":["<url>"],"fact_check_found":<true|false>}`,
+      `Respond ONLY with valid JSON: {"verdict":"<supported|contradicted|contested|inconclusive>","summary":"<2 sentences>","relevant_urls":["<url of actually relevant article only>"],"fact_check_found":<true|false>}`,
     ].filter(Boolean).join(NL)
     const result = await model.generateContent(prompt)
     const parsed = JSON.parse(stripJsonFences(result.response.text()))

@@ -62,6 +62,35 @@ function ScoreRing({ score, color }: { score: number; color: string }) {
   )
 }
 
+// ── Derive a short 1–3 word label from a URL ──────────────────────────────
+const DOMAIN_NAMES: Record<string, string> = {
+  "bbc.com": "BBC", "bbc.co.uk": "BBC",
+  "reuters.com": "Reuters", "apnews.com": "AP News",
+  "theguardian.com": "Guardian", "nytimes.com": "NY Times",
+  "washingtonpost.com": "Washington Post", "aljazeera.com": "Al Jazeera",
+  "france24.com": "France 24", "dw.com": "DW",
+  "haaretz.com": "Haaretz", "timesofisrael.com": "Times of Israel",
+  "kyivindependent.com": "Kyiv Independent", "foreignpolicy.com": "Foreign Policy",
+  "bellingcat.com": "Bellingcat", "en.wikipedia.org": "Wikipedia",
+  "snopes.com": "Snopes", "fullfact.org": "Full Fact",
+  "politifact.com": "PolitiFact", "factcheck.org": "FactCheck",
+  "afp.com": "AFP", "lemonde.fr": "Le Monde",
+}
+
+function shortLabel(label: string, url: string): string {
+  const words = label.trim().split(/\s+/)
+  if (words.length <= 3) return label
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "")
+    for (const [domain, name] of Object.entries(DOMAIN_NAMES)) {
+      if (host.includes(domain)) return name
+    }
+    return host
+  } catch {
+    return words.slice(0, 2).join(" ")
+  }
+}
+
 // ── Render text with clickable URLs and [label](url) markdown links ───────
 function LinkedText({ text }: { text: string }) {
   const TOKEN_RE = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)|https?:\/\/[^\s|>\]]+/g
@@ -70,12 +99,13 @@ function LinkedText({ text }: { text: string }) {
   let match: RegExpExecArray | null
   while ((match = TOKEN_RE.exec(text)) !== null) {
     if (match.index > last) parts.push(text.slice(last, match.index))
-    const label = match[1]
+    const label = match[1] || ""
     const url = (match[2] || match[0]).replace(/[.,;)]+$/, "")
+    const display = shortLabel(label || url, url)
     parts.push(
       <a key={match.index} href={url} target="_blank" rel="noopener noreferrer"
-        className="text-accent underline underline-offset-2 hover:text-blue-300">
-        {label || url}
+        className="text-accent underline underline-offset-2 hover:text-blue-300 whitespace-nowrap">
+        {display}
       </a>
     )
     last = match.index + match[0].length
