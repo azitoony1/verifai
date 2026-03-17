@@ -209,6 +209,7 @@ export default function Home() {
 
   // Shared state
   const [claim, setClaim] = useState("")
+  const [eventDate, setEventDate] = useState("")
   const [loading, setLoading] = useState(false)
   const [loadingStep, setLoadingStep] = useState("")
   const [result, setResult] = useState<VerificationResult | null>(null)
@@ -231,6 +232,7 @@ export default function Home() {
     setArticleUrl("")
     setArticleText("")
     setClaim("")
+    setEventDate("")
     setResult(null)
     setError(null)
   }
@@ -265,6 +267,7 @@ export default function Home() {
       const fd = new FormData()
       fd.append("image", image)
       fd.append("claim", claim)
+      if (eventDate.trim()) fd.append("eventDate", eventDate.trim())
       if (exifData) fd.append("exif", JSON.stringify(exifData))
 
       setLoadingStep("Consulting AI analysis engine...")
@@ -465,6 +468,23 @@ export default function Home() {
                   placeholder:text-muted focus:outline-none focus:border-accent/60 resize-none"
               />
             </div>
+
+            {/* Event date field — image mode only */}
+            {mode === "image" && (
+              <div className="mt-3">
+                <label className="block text-xs font-mono text-muted mb-1.5 uppercase tracking-wider">
+                  Approximate date of event (optional)
+                </label>
+                <input
+                  type="text"
+                  value={eventDate}
+                  onChange={e => setEventDate(e.target.value)}
+                  placeholder="e.g. March 2026 — leave blank if unknown"
+                  className="w-full bg-card border border-border rounded-lg px-3 py-2.5 text-sm text-bright
+                    placeholder:text-muted focus:outline-none focus:border-accent/60"
+                />
+              </div>
+            )}
 
             <button
               onClick={mode === "image" ? analyzeImage : analyzeArticle}

@@ -139,7 +139,7 @@ async function runFactCheckPreCheck(claim: string): Promise<string> {
 
 // ── PHASE 1: Gemini vision analysis (with dual scoring) ────────────────────
 async function runGeminiAnalysis(
-  imageBase64: string, mimeType: string, claim: string, briefing: NewsBriefing, wikiBrief: string
+  imageBase64: string, mimeType: string, claim: string, briefing: NewsBriefing, wikiBrief: string, eventDate = ""
 ) {
   const model = genAI.getGenerativeModel({
     model: "gemini-3-flash-preview",
@@ -192,6 +192,13 @@ async function runGeminiAnalysis(
     "Location = UNVERIFIABLE unless specific place-identifying text or unmistakable landmark is visible. Do not adjust score for location.",
     "Attribution (who did it) = ALWAYS UNVERIFIABLE from image alone.",
     "If the image shows what the claim describes generically (explosion, fire, attack) with no visual contradiction: score stays near 50 (uncertain, not false).",
+    "",
+    ...(eventDate ? [
+      "=== TASK 3b: TEMPORAL CONSISTENCY ===",
+      `The user states this image is from: ${eventDate}.`,
+      "Check whether anything visible in the image — foliage/vegetation state, vehicle models and production years, signage, equipment variants, clothing, snow/ice, weather, and season cues — is consistent or inconsistent with that date, keeping in mind the location as well (e.g. July in Australia is winter; July in the Netherlands is summer).",
+      "If inconsistencies are found, flag them and reduce claim_accuracy_score accordingly. If consistent, note that briefly.",
+    ] : []),
     "",
     "=== TASK 4: FLAGS ===",
     "Only flag things with DIRECT visual evidence. Do not flag unverifiable elements as suspicious.",
@@ -818,6 +825,7 @@ export async function POST(req: NextRequest) {
     const formData = await req.formData()
     const file = formData.get("image") as File | null
     const claim = (formData.get("claim") as string) || ""
+    const eventDate = (formData.get("eventDate") as string) || ""
     if (!file) return NextResponse.json({ error: "No image provided" }, { status: 400 })
 
     const bytes = await file.arrayBuffer()
@@ -836,7 +844,7 @@ export async function POST(req: NextRequest) {
     ])
 
     // ── Phase 2: Gemini vision analysis (also generates search queries) ───
-    const geminiResult = await runGeminiAnalysis(imageBase64, mimeType, claim, briefing, wikiBrief)
+    const geminiResult = await runGeminiAnalysis(imageBase64, mimeType, claim, briefing, wikiBrief, eventDate)
 
     // ── Phase 3: web search + military analysis in parallel ───────────────
     const hasMilitary = geminiResult.has_military_equipment === true ||
